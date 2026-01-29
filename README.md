@@ -89,14 +89,15 @@ python -m EvoScientist
 
 ### Script Inference
 ```python
-from EvoScientist import agent
+from EvoScientist import EvoScientist_agent
 from langchain_core.messages import HumanMessage
 from EvoScientist.utils import format_messages
+
 thread = {"configurable": {"thread_id": "1"}}
 question = "Hi?"
 last_len = 0
 
-for state in agent.stream(
+for state in EvoScientist_agent.stream(
     {"messages": [HumanMessage(content=question)]},
     config=thread,
     stream_mode="values",
@@ -107,6 +108,28 @@ for state in agent.stream(
         last_len = len(msgs)
 ```
 
+<details>
+<summary> Output </summary>
+
+```json
+
+╭─────────────────────────────────────────────────── 🧑 Human ────────────────────────────────────────────────────╮
+│ Hi?                                                                                                             │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────── 📝 AI ─────────────────────────────────────────────────────╮
+│ Hi! I'm here to help you with experimental research tasks. I can assist with:                                   │
+│                                                                                                                 │
+│ - **Planning experiments** - designing stages, success criteria, and workflows                                  │
+│ - **Running experiments** - implementing baselines, training models, analyzing results                          │
+│ - **Research** - finding papers, methods, datasets, and baselines                                               │
+│ - **Analysis** - computing metrics, creating visualizations, interpreting results                               │
+│ - **Writing** - drafting experimental reports and documentation                                                 │
+│                                                                                                                 │
+│ What would you like to work on today?                                                                           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+</details>
 
 ### Web Interface  
 
