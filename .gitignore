@@ -1,28 +1,25 @@
-# Angular specific
-/dist/
-/out-tsc/
-/tmp/
-/coverage/
-/e2e/test-output/
-/.angular/
-.angular/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
 
-# Node modules and dependency files
-/node_modules/
-/package-lock.json
-/yarn.lock
+# Environment
+.env
+.venv/
+venv/
 
-# Environment files
-/.env
+# IDE / Tools
+.vscode/
+.idea/
+.claude/
+.github/
+.cursor/
+.cursorrules
 
-# Angular CLI and build artefacts
-/.angular-cli.json
-/.ng/
-
-# TypeScript cache
-*.tsbuildinfo
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Project specific
+.langgraph_api/
+workspace/
+.deno_cache/
