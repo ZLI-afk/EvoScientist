@@ -228,6 +228,37 @@ class TestNameMerging:
         assert len(state.subagents) == 2
 
 
+class TestSubagentNameResolution:
+    def test_subagent_tool_call_resolves_single_active(self):
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        state.handle_event({
+            "type": "subagent_tool_call",
+            "subagent": "sub-agent",
+            "name": "execute",
+            "args": {},
+            "id": "tc1",
+        })
+        assert len(state.subagents) == 1
+        assert state.subagents[0].name == "code-agent"
+        assert len(state.subagents[0].tool_calls) == 1
+
+    def test_subagent_tool_call_does_not_resolve_when_multiple_active(self):
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        state.handle_event({"type": "subagent_start", "name": "research-agent", "description": ""})
+        state.handle_event({
+            "type": "subagent_tool_call",
+            "subagent": "sub-agent",
+            "name": "execute",
+            "args": {},
+            "id": "tc1",
+        })
+        # Should stay as "sub-agent" because more than one named subagent is active
+        assert len(state.subagents) == 3
+        assert state.subagents[-1].name == "sub-agent"
+
+
 # === _parse_todo_items ===
 
 class TestParseTodoItems:
@@ -283,3 +314,228 @@ class TestBuildTodoStats:
     def test_empty_items(self):
         result = _build_todo_stats([])
         assert "0 items" in result
+
+
+# === _resolve_subagent_name ===
+
+class TestResolveSubagentName:
+    def test_real_name_passthrough(self):
+        state = StreamState()
+        assert state._resolve_subagent_name("code-agent") == "code-agent"
+
+    def test_resolve_single_active(self):
+        """When exactly one named active sub-agent exists, 'sub-agent' resolves to it."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        assert state._resolve_subagent_name("sub-agent") == "code-agent"
+
+    def test_no_resolve_multiple_active(self):
+        """With multiple active named sub-agents, 'sub-agent' stays generic."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        state.handle_event({"type": "subagent_start", "name": "research-agent", "description": ""})
+        assert state._resolve_subagent_name("sub-agent") == "sub-agent"
+
+    def test_no_resolve_no_active(self):
+        state = StreamState()
+        assert state._resolve_subagent_name("sub-agent") == "sub-agent"
+
+
+# === subagent_end fallback ===
+
+class TestSubagentEndFallback:
+    def test_end_resolves_via_name(self):
+        """subagent_end with exact name deactivates sub-agent."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        state.handle_event({"type": "subagent_end", "name": "code-agent"})
+        assert state.subagents[0].is_active is False
+
+    def test_end_resolves_generic_to_single_active(self):
+        """subagent_end with 'sub-agent' resolves to the only active named sub-agent."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "research-agent", "description": ""})
+        state.handle_event({"type": "subagent_end", "name": "sub-agent"})
+        assert state.subagents[0].is_active is False
+
+    def test_end_fallback_deactivates_oldest(self):
+        """When name can't be resolved, deactivates oldest active sub-agent."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "a-agent", "description": ""})
+        state.handle_event({"type": "subagent_start", "name": "b-agent", "description": ""})
+        # "sub-agent" can't resolve (2 active), falls back to oldest
+        state.handle_event({"type": "subagent_end", "name": "sub-agent"})
+        assert state.subagents[0].is_active is False  # a-agent deactivated
+        assert state.subagents[1].is_active is True   # b-agent still active
+
+
+# === Todo capture from write_todos args ===
+
+class TestTodoCaptureFromArgs:
+    def test_capture_from_tool_call_args(self):
+        """write_todos tool_call args should update todo_items."""
+        state = StreamState()
+        todos = [{"status": "todo", "content": "Task A"}, {"status": "active", "content": "Task B"}]
+        state.handle_event({
+            "type": "tool_call",
+            "id": "tc1",
+            "name": "write_todos",
+            "args": {"todos": todos},
+        })
+        assert state.todo_items == todos
+
+    def test_capture_from_tool_result_fallback(self):
+        """write_todos tool_result should also update todo_items."""
+        import json
+        state = StreamState()
+        items = [{"status": "done", "content": "Finished"}]
+        state.handle_event({
+            "type": "tool_result",
+            "name": "write_todos",
+            "content": json.dumps(items),
+        })
+        assert len(state.todo_items) == 1
+        assert state.todo_items[0]["status"] == "done"
+
+    def test_args_capture_takes_priority(self):
+        """Args capture (structured) should override result parse."""
+        import json
+        state = StreamState()
+        args_todos = [{"status": "active", "content": "From args"}]
+        result_todos = [{"status": "todo", "content": "From result"}]
+        state.handle_event({
+            "type": "tool_call",
+            "id": "tc1",
+            "name": "write_todos",
+            "args": {"todos": args_todos},
+        })
+        assert state.todo_items[0]["content"] == "From args"
+        # Result arrives but args already captured — result updates too
+        state.handle_event({
+            "type": "tool_result",
+            "name": "write_todos",
+            "content": json.dumps(result_todos),
+        })
+        # Result overwrites (both sources are valid, last write wins)
+        assert state.todo_items[0]["content"] == "From result"
+
+    def test_read_todos_result_updates(self):
+        """read_todos tool_result should also update todo_items."""
+        import json
+        state = StreamState()
+        items = [{"status": "todo", "content": "Read item"}]
+        state.handle_event({
+            "type": "tool_result",
+            "name": "read_todos",
+            "content": json.dumps(items),
+        })
+        assert len(state.todo_items) == 1
+
+    def test_non_todo_tool_does_not_capture(self):
+        state = StreamState()
+        state.handle_event({
+            "type": "tool_call",
+            "id": "tc1",
+            "name": "execute",
+            "args": {"command": "ls"},
+        })
+        assert state.todo_items == []
+
+
+# === latest_text reset on tool_call ===
+
+class TestLatestTextReset:
+    def test_latest_text_accumulates(self):
+        state = StreamState()
+        state.handle_event({"type": "text", "content": "a"})
+        state.handle_event({"type": "text", "content": "b"})
+        assert state.latest_text == "ab"
+
+    def test_latest_text_resets_on_tool_call(self):
+        state = StreamState()
+        state.handle_event({"type": "text", "content": "first segment"})
+        state.handle_event({"type": "tool_call", "id": "tc1", "name": "execute", "args": {}})
+        assert state.latest_text == ""
+        state.handle_event({"type": "text", "content": "second segment"})
+        assert state.latest_text == "second segment"
+        # response_text still has everything
+        assert state.response_text == "first segmentsecond segment"
+
+
+# === Name merging edge cases ===
+
+class TestNameMergingAdvanced:
+    def test_subagent_merges_into_preregistered(self):
+        """'sub-agent' event merges into pre-registered real-name entry with no tools."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": "code"})
+        assert len(state.subagents) == 1
+        # Now sub-agent tool call arrives — should merge into code-agent
+        state.handle_event({
+            "type": "subagent_tool_call",
+            "subagent": "sub-agent",
+            "name": "execute",
+            "args": {},
+            "id": "tc1",
+        })
+        # _resolve_subagent_name should resolve "sub-agent" → "code-agent" (single active)
+        assert len(state.subagents) == 1
+        assert state.subagents[0].name == "code-agent"
+        assert len(state.subagents[0].tool_calls) == 1
+
+    def test_multiple_subagents_no_cross_merge(self):
+        """Two named sub-agents should not merge with each other."""
+        state = StreamState()
+        state.handle_event({"type": "subagent_start", "name": "code-agent", "description": ""})
+        state.handle_event({"type": "subagent_start", "name": "research-agent", "description": ""})
+        state.handle_event({
+            "type": "subagent_tool_call",
+            "subagent": "code-agent",
+            "name": "execute",
+            "args": {},
+            "id": "tc1",
+        })
+        state.handle_event({
+            "type": "subagent_tool_call",
+            "subagent": "research-agent",
+            "name": "tavily_search",
+            "args": {},
+            "id": "tc2",
+        })
+        assert len(state.subagents) == 2
+        code_sa = state._subagent_map["code-agent"]
+        research_sa = state._subagent_map["research-agent"]
+        assert len(code_sa.tool_calls) == 1
+        assert code_sa.tool_calls[0]["name"] == "execute"
+        assert len(research_sa.tool_calls) == 1
+        assert research_sa.tool_calls[0]["name"] == "tavily_search"
+
+
+# === _parse_todo_items edge cases ===
+
+class TestParseTodoItemsAdvanced:
+    def test_prefixed_with_update_message(self):
+        """'Updated todo list to [...]' format from write_todos result."""
+        text = "Updated todo list to [{'status': 'todo', 'content': 'Do X'}]"
+        result = _parse_todo_items(text)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["content"] == "Do X"
+
+    def test_multiple_items(self):
+        import json
+        items = [
+            {"status": "done", "content": "A"},
+            {"status": "active", "content": "B"},
+            {"status": "todo", "content": "C"},
+        ]
+        result = _parse_todo_items(json.dumps(items))
+        assert len(result) == 3
+
+    def test_non_list_json(self):
+        """JSON object (not list) should return None."""
+        assert _parse_todo_items('{"status": "todo"}') is None
+
+    def test_list_of_non_dicts(self):
+        """List of strings should return None."""
+        assert _parse_todo_items('["a", "b"]') is None

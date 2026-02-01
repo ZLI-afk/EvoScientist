@@ -74,41 +74,166 @@ async def stream_agent_events(agent: Any, message: str, thread_id: str) -> Async
     """
     config = {"configurable": {"thread_id": thread_id}}
     emitter = StreamEventEmitter()
-    tracker = ToolCallTracker()
+    main_tracker = ToolCallTracker()
     full_response = ""
 
-    # Track sub-agent names by root namespace element
-    _subagent_names: dict[str, str] = {}  # root_ns_element → display name
-    # Track which task tool_call_ids have been announced
-    _announced_tasks: set[str] = set()
+    # Track sub-agent names
+    _key_to_name: dict[str, str] = {}     # subagent_key → display name (cache)
+    _announced_names: list[str] = []       # ordered queue of announced task names
+    _assigned_names: set[str] = set()      # names already assigned to a namespace
+    _announced_task_ids: list[str] = []     # ordered task tool_call_ids
+    _task_id_to_name: dict[str, str] = {}  # tool_call_id → sub-agent name
+    _subagent_trackers: dict[str, ToolCallTracker] = {}  # namespace_key → tracker
 
-    def _get_subagent_name(namespace: tuple) -> str | None:
-        """Get sub-agent name from namespace, or None if main agent.
+    def _register_task_tool_call(tc_data: dict) -> str | None:
+        """Register or update a task tool call, return subagent name if started/updated."""
+        tool_id = tc_data.get("id", "")
+        if not tool_id:
+            return None
+        args = tc_data.get("args", {}) or {}
+        desc = str(args.get("description", "")).strip()
+        sa_name = str(args.get("subagent_type", "")).strip()
+        if not sa_name:
+            # Fallback to description snippet (may be empty during streaming)
+            sa_name = desc[:30] + "..." if len(desc) > 30 else desc
+        if not sa_name:
+            sa_name = "sub-agent"
 
-        Any non-empty namespace is a sub-agent. Name is resolved by checking
-        all registered names for a prefix match against namespace elements.
+        if tool_id not in _announced_task_ids:
+            _announced_task_ids.append(tool_id)
+            _announced_names.append(sa_name)
+            _task_id_to_name[tool_id] = sa_name
+            return sa_name
+
+        # Update mapping if we learned a better name later
+        current = _task_id_to_name.get(tool_id, "sub-agent")
+        if sa_name != "sub-agent" and current != sa_name:
+            _task_id_to_name[tool_id] = sa_name
+            try:
+                idx = _announced_task_ids.index(tool_id)
+                if idx < len(_announced_names):
+                    _announced_names[idx] = sa_name
+            except ValueError:
+                pass
+            return sa_name
+        return None
+
+    def _extract_task_id(namespace: tuple) -> tuple[str | None, str | None]:
+        """Extract task tool_call_id from namespace if present.
+
+        Returns (task_id, task_ns_element) or (None, None).
+        """
+        for part in namespace:
+            part_str = str(part)
+            if "task:" in part_str:
+                tail = part_str.split("task:", 1)[1]
+                task_id = tail.split(":", 1)[0] if tail else ""
+                if task_id:
+                    return task_id, part_str
+        return None, None
+
+    def _next_announced_name() -> str | None:
+        """Get next announced name that hasn't been assigned yet."""
+        for announced in _announced_names:
+            if announced not in _assigned_names:
+                _assigned_names.add(announced)
+                return announced
+        return None
+
+    def _find_task_id_from_metadata(metadata: dict | None) -> str | None:
+        """Try to find a task tool_call_id in metadata."""
+        if not metadata:
+            return None
+        candidates = (
+            "tool_call_id",
+            "task_id",
+            "parent_run_id",
+            "root_run_id",
+            "run_id",
+        )
+        for key in candidates:
+            val = metadata.get(key)
+            if val and val in _task_id_to_name:
+                return val
+        return None
+
+    def _get_subagent_key(namespace: tuple, metadata: dict | None) -> str | None:
+        """Stable key for tracker/mapping per sub-agent namespace."""
+        if not namespace:
+            return None
+        task_id, task_ns = _extract_task_id(namespace)
+        if task_ns:
+            return task_ns
+        meta_task_id = _find_task_id_from_metadata(metadata)
+        if meta_task_id:
+            return f"task:{meta_task_id}"
+        if metadata:
+            for key in ("parent_run_id", "root_run_id", "run_id", "graph_id", "node_id"):
+                val = metadata.get(key)
+                if val:
+                    return f"{key}:{val}"
+        return str(namespace)
+
+    def _get_subagent_name(namespace: tuple, metadata: dict | None) -> str | None:
+        """Resolve sub-agent name from namespace, or None if main agent.
+
+        Priority:
+        0) metadata["lc_agent_name"] — most reliable, set by DeepAgents framework.
+        1) Match task_id embedded in namespace to announced tool_call_id.
+        2) Use cached key mapping (only real names, never "sub-agent").
+        3) Queue-based: assign next announced name to this key.
+        4) Fallback: return "sub-agent" WITHOUT caching.
         """
         if not namespace:
             return None
-        root = str(namespace[0]) if namespace else ""
-        # Exact match
-        if root in _subagent_names:
-            return _subagent_names[root]
-        # Prefix match: namespace root might be "task:abc123" and we
-        # registered "task:call_xyz" — check if any registered key
-        # appears as a substring of the root or vice versa
-        for key, name in _subagent_names.items():
-            if key in root or root in key:
-                _subagent_names[root] = name  # cache for next lookup
+
+        key = _get_subagent_key(namespace, metadata) or str(namespace)
+
+        # 0) lc_agent_name from metadata — the REAL sub-agent name
+        #    set by the DeepAgents framework on every namespace event.
+        if metadata:
+            lc_name = metadata.get("lc_agent_name", "")
+            if isinstance(lc_name, str):
+                lc_name = lc_name.strip()
+            # Filter out generic/framework names
+            if lc_name and lc_name not in (
+                "sub-agent", "agent", "tools", "EvoScientist",
+                "LangGraph", "",
+            ):
+                _key_to_name[key] = lc_name
+                return lc_name
+
+        # 1) Resolve by task_id if present in namespace
+        task_id, _task_ns = _extract_task_id(namespace)
+        if task_id and task_id in _task_id_to_name:
+            name = _task_id_to_name[task_id]
+            if name and name != "sub-agent":
+                _assigned_names.add(name)
+                _key_to_name[key] = name
                 return name
-        # Auto-register: infer from namespace string
-        if ":" in root:
-            inferred = root.split(":")[0]
-        else:
-            inferred = root
-        name = inferred or "sub-agent"
-        _subagent_names[root] = name
-        return name
+
+        meta_task_id = _find_task_id_from_metadata(metadata)
+        if meta_task_id and meta_task_id in _task_id_to_name:
+            name = _task_id_to_name[meta_task_id]
+            if name and name != "sub-agent":
+                _assigned_names.add(name)
+                _key_to_name[key] = name
+                return name
+
+        # 2) Cached real name for this key (skip if it's "sub-agent")
+        cached = _key_to_name.get(key)
+        if cached and cached != "sub-agent":
+            return cached
+
+        # 3) Assign next announced name from queue (skip "sub-agent" entries)
+        for announced in _announced_names:
+            if announced not in _assigned_names and announced != "sub-agent":
+                _assigned_names.add(announced)
+                _key_to_name[key] = announced
+                return announced
+
+        # 4) No real names available yet — return generic WITHOUT caching
+        return "sub-agent"
 
     try:
         async for chunk in agent.astream(
@@ -131,20 +256,26 @@ async def stream_agent_events(agent: Any, message: str, thread_id: str) -> Async
                     # (message, metadata) — no namespace
                     data = chunk
 
-            # Unpack message from data
+            # Unpack message + metadata from data
             msg: Any
+            metadata: dict = {}
             if isinstance(data, tuple) and len(data) >= 2:
                 msg = data[0]
+                metadata = data[1] or {}
             else:
                 msg = data
 
-            subagent = _get_subagent_name(namespace)
+            subagent = _get_subagent_name(namespace, metadata)
+            subagent_tracker = None
+            if subagent:
+                tracker_key = _get_subagent_key(namespace, metadata) or str(namespace)
+                subagent_tracker = _subagent_trackers.setdefault(tracker_key, ToolCallTracker())
 
             # Process AIMessageChunk / AIMessage
             if isinstance(msg, (AIMessageChunk, AIMessage)):
                 if subagent:
                     # Sub-agent content — emit sub-agent events
-                    for ev in _process_chunk_content(msg, emitter, tracker):
+                    for ev in _process_chunk_content(msg, emitter, subagent_tracker):
                         if ev.type == "tool_call":
                             yield emitter.subagent_tool_call(
                                 subagent, ev.data["name"], ev.data["args"], ev.data.get("id", "")
@@ -164,50 +295,54 @@ async def stream_agent_events(agent: Any, message: str, thread_id: str) -> Async
                             ).data
                 else:
                     # Main agent content
-                    for ev in _process_chunk_content(msg, emitter, tracker):
+                    for ev in _process_chunk_content(msg, emitter, main_tracker):
                         if ev.type == "text":
                             full_response += ev.data.get("content", "")
                         yield ev.data
 
                     if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        for ev in _process_tool_calls(msg.tool_calls, emitter, tracker):
+                        for ev in _process_tool_calls(msg.tool_calls, emitter, main_tracker):
                             yield ev.data
                             # Detect task tool calls → announce sub-agent
                             tc_data = ev.data
                             if tc_data.get("name") == "task":
-                                tool_id = tc_data.get("id", "")
-                                if tool_id and tool_id not in _announced_tasks:
-                                    _announced_tasks.add(tool_id)
-                                    args = tc_data.get("args", {})
-                                    sa_name = args.get("subagent_type", "").strip()
-                                    desc = args.get("description", "").strip()
-                                    # Use subagent_type as name; fall back to description snippet
-                                    if not sa_name:
-                                        sa_name = desc[:30] + "..." if len(desc) > 30 else desc
-                                    if not sa_name:
-                                        sa_name = "sub-agent"
-                                    # Pre-register name so namespace lookup finds it
-                                    _subagent_names[f"task:{tool_id}"] = sa_name
-                                    yield emitter.subagent_start(sa_name, desc).data
+                                started_name = _register_task_tool_call(tc_data)
+                                if started_name:
+                                    desc = str(tc_data.get("args", {}).get("description", "")).strip()
+                                    yield emitter.subagent_start(started_name, desc).data
 
             # Process ToolMessage (tool execution result)
             elif hasattr(msg, "type") and msg.type == "tool":
                 if subagent:
+                    if subagent_tracker:
+                        subagent_tracker.finalize_all()
+                        for info in subagent_tracker.emit_all_pending():
+                            yield emitter.subagent_tool_call(
+                                subagent,
+                                info.name,
+                                info.args,
+                                info.id,
+                            ).data
                     name = getattr(msg, "name", "unknown")
                     raw_content = str(getattr(msg, "content", ""))
                     content = raw_content[:DisplayLimits.TOOL_RESULT_MAX]
                     success = is_success(content)
                     yield emitter.subagent_tool_result(subagent, name, content, success).data
                 else:
-                    for ev in _process_tool_result(msg, emitter, tracker):
+                    for ev in _process_tool_result(msg, emitter, main_tracker):
                         yield ev.data
+                        # Tool result can re-emit tool_call with full args; update task mapping
+                        if ev.type == "tool_call" and ev.data.get("name") == "task":
+                            started_name = _register_task_tool_call(ev.data)
+                            if started_name:
+                                desc = str(ev.data.get("args", {}).get("description", "")).strip()
+                                yield emitter.subagent_start(started_name, desc).data
                     # Check if this is a task result → sub-agent ended
                     name = getattr(msg, "name", "")
                     if name == "task":
                         tool_call_id = getattr(msg, "tool_call_id", "")
-                        # Find the sub-agent name for this task
-                        sa_key = f"task:{tool_call_id}"
-                        sa_name = _subagent_names.get(sa_key, "sub-agent")
+                        # Find the sub-agent name via tool_call_id map
+                        sa_name = _task_id_to_name.get(tool_call_id, "sub-agent")
                         yield emitter.subagent_end(sa_name).data
 
     except Exception as e:
@@ -403,12 +538,14 @@ class StreamState:
         # Sub-agent tracking
         self.subagents: list[SubAgentState] = []
         self._subagent_map: dict[str, SubAgentState] = {}  # name → state
+        # Todo list tracking
+        self.todo_items: list[dict] = []
+        # Latest text segment (reset on each tool_call)
+        self.latest_text = ""
 
     def _get_or_create_subagent(self, name: str, description: str = "") -> SubAgentState:
         if name not in self._subagent_map:
-            # Check if there's a generic "sub-agent" entry that should be merged
-            # This happens when namespace events arrive before the task tool call
-            # registers the proper name
+            # Case 1: real name arrives, "sub-agent" entry exists → rename it
             if name != "sub-agent" and "sub-agent" in self._subagent_map:
                 old_sa = self._subagent_map.pop("sub-agent")
                 old_sa.name = name
@@ -416,12 +553,40 @@ class StreamState:
                     old_sa.description = description
                 self._subagent_map[name] = old_sa
                 return old_sa
+            # Case 2: "sub-agent" arrives but a pre-registered real-name entry
+            #         exists with no tool calls → merge into it
+            if name == "sub-agent":
+                active_named = [
+                    sa for sa in self.subagents
+                    if sa.is_active and sa.name != "sub-agent"
+                ]
+                if len(active_named) == 1 and not active_named[0].tool_calls:
+                    self._subagent_map[name] = active_named[0]
+                    return active_named[0]
             sa = SubAgentState(name, description)
             self.subagents.append(sa)
             self._subagent_map[name] = sa
-        elif description and not self._subagent_map[name].description:
-            self._subagent_map[name].description = description
+        else:
+            existing = self._subagent_map[name]
+            if description and not existing.description:
+                existing.description = description
+            # If this entry was created as "sub-agent" placeholder and the
+            # actual name is different, update.
+            if name != "sub-agent" and existing.name == "sub-agent":
+                existing.name = name
         return self._subagent_map[name]
+
+    def _resolve_subagent_name(self, name: str) -> str:
+        """Resolve "sub-agent" to the single active named sub-agent when possible."""
+        if name != "sub-agent":
+            return name
+        active_named = [
+            sa.name for sa in self.subagents
+            if sa.is_active and sa.name != "sub-agent"
+        ]
+        if len(active_named) == 1:
+            return active_named[0]
+        return name
 
     def handle_event(self, event: dict) -> str:
         """Process a single stream event, update internal state, return event type."""
@@ -437,18 +602,23 @@ class StreamState:
             self.is_thinking = False
             self.is_responding = True
             self.is_processing = False
-            self.response_text += event.get("content", "")
+            text_content = event.get("content", "")
+            self.response_text += text_content
+            self.latest_text += text_content
 
         elif event_type == "tool_call":
             self.is_thinking = False
             self.is_responding = False
             self.is_processing = False
+            self.latest_text = ""  # Reset — next text segment is a new message
 
             tool_id = event.get("id", "")
+            tool_name = event.get("name", "unknown")
+            tool_args = event.get("args", {})
             tc_data = {
                 "id": tool_id,
-                "name": event.get("name", "unknown"),
-                "args": event.get("args", {}),
+                "name": tool_name,
+                "args": tool_args,
             }
 
             if tool_id:
@@ -463,12 +633,25 @@ class StreamState:
             else:
                 self.tool_calls.append(tc_data)
 
+            # Capture todo items from write_todos args (most reliable source)
+            if tool_name == "write_todos":
+                todos = tool_args.get("todos", [])
+                if isinstance(todos, list) and todos:
+                    self.todo_items = todos
+
         elif event_type == "tool_result":
             self.is_processing = True
+            result_name = event.get("name", "unknown")
+            result_content = event.get("content", "")
             self.tool_results.append({
-                "name": event.get("name", "unknown"),
-                "content": event.get("content", ""),
+                "name": result_name,
+                "content": result_content,
             })
+            # Update todo list from write_todos / read_todos results (fallback)
+            if result_name in ("write_todos", "read_todos"):
+                parsed = _parse_todo_items(result_content)
+                if parsed:
+                    self.todo_items = parsed
 
         elif event_type == "subagent_start":
             name = event.get("name", "sub-agent")
@@ -477,7 +660,7 @@ class StreamState:
             sa.is_active = True
 
         elif event_type == "subagent_tool_call":
-            sa_name = event.get("subagent", "sub-agent")
+            sa_name = self._resolve_subagent_name(event.get("subagent", "sub-agent"))
             sa = self._get_or_create_subagent(sa_name)
             sa.add_tool_call(
                 event.get("name", "unknown"),
@@ -486,7 +669,7 @@ class StreamState:
             )
 
         elif event_type == "subagent_tool_result":
-            sa_name = event.get("subagent", "sub-agent")
+            sa_name = self._resolve_subagent_name(event.get("subagent", "sub-agent"))
             sa = self._get_or_create_subagent(sa_name)
             sa.add_tool_result(
                 event.get("name", "unknown"),
@@ -495,9 +678,15 @@ class StreamState:
             )
 
         elif event_type == "subagent_end":
-            name = event.get("name", "sub-agent")
+            name = self._resolve_subagent_name(event.get("name", "sub-agent"))
             if name in self._subagent_map:
                 self._subagent_map[name].is_active = False
+            elif name == "sub-agent":
+                # Couldn't resolve — deactivate the oldest active sub-agent
+                for sa in self.subagents:
+                    if sa.is_active:
+                        sa.is_active = False
+                        break
 
         elif event_type == "done":
             self.is_processing = False
@@ -518,12 +707,14 @@ class StreamState:
         return {
             "thinking_text": self.thinking_text,
             "response_text": self.response_text,
+            "latest_text": self.latest_text,
             "tool_calls": self.tool_calls,
             "tool_results": self.tool_results,
             "is_thinking": self.is_thinking,
             "is_responding": self.is_responding,
             "is_processing": self.is_processing,
             "subagents": self.subagents,
+            "todo_items": self.todo_items,
         }
 
 
@@ -536,43 +727,58 @@ def _parse_todo_items(content: str) -> list[dict] | None:
 
     Attempts to extract a list of dicts with 'status' and 'content' keys
     from the tool result string. Returns None if parsing fails.
+
+    Handles formats like:
+      - Raw JSON/Python list: [{"content": "...", "status": "..."}]
+      - Prefixed: "Updated todo list to [{'content': '...', ...}]"
     """
     import ast
     import json
 
     content = content.strip()
 
-    # Try JSON first
-    try:
-        data = json.loads(content)
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
+    def _try_parse(text: str) -> list[dict] | None:
+        """Try JSON then Python literal parsing."""
+        text = text.strip()
+        try:
+            data = json.loads(text)
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            data = ast.literal_eval(text)
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                return data
+        except (ValueError, SyntaxError):
+            pass
+        return None
 
-    # Try Python literal
-    try:
-        data = ast.literal_eval(content)
-        if isinstance(data, list) and data and isinstance(data[0], dict):
-            return data
-    except (ValueError, SyntaxError):
-        pass
+    # Try the full content directly
+    result = _try_parse(content)
+    if result:
+        return result
 
-    # Try to find a list embedded in the output
+    # Extract embedded [...] from content (e.g. "Updated todo list to [{...}]")
+    bracket_start = content.find("[")
+    if bracket_start != -1:
+        bracket_end = content.rfind("]")
+        if bracket_end > bracket_start:
+            embedded = content[bracket_start:bracket_end + 1]
+            result = _try_parse(embedded)
+            if result:
+                return result
+
+    # Try line-by-line scan
     for line in content.split("\n"):
         line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            try:
-                data = json.loads(line)
-                if isinstance(data, list):
-                    return data
-            except (json.JSONDecodeError, ValueError):
-                try:
-                    data = ast.literal_eval(line)
-                    if isinstance(data, list):
-                        return data
-                except (ValueError, SyntaxError):
-                    pass
+        if "[" in line:
+            start = line.find("[")
+            end = line.rfind("]")
+            if end > start:
+                result = _try_parse(line[start:end + 1])
+                if result:
+                    return result
 
     return None
 
@@ -701,14 +907,14 @@ def _render_tool_call_line(tc: dict, tr: dict | None) -> Text:
 
 
 def _render_subagent_section(sa: 'SubAgentState', compact: bool = False) -> list:
-    """Render a sub-agent's activity as a compact indented section.
+    """Render a sub-agent's activity as a bordered section.
 
     Args:
         sa: Sub-agent state to render
-        compact: If True, render minimal 1-2 line summary (for final display)
+        compact: If True, render minimal 1-line summary (completed sub-agents)
 
-    Completed tools are collapsed into a summary line.
-    Only the currently running tool is shown expanded.
+    Header uses "Cooking with {name}" style matching task tool format.
+    Active sub-agents show bordered tool list; completed ones collapse to 1 line.
     """
     elements = []
     BORDER = "dim cyan" if sa.is_active else "dim"
@@ -729,59 +935,49 @@ def _render_subagent_section(sa: 'SubAgentState', compact: bool = False) -> list
     succeeded = sum(1 for _, tr in completed if tr.get("success", True))
     failed = len(completed) - succeeded
 
-    # --- Compact mode: 1-2 line summary for final display ---
+    # Build display name
+    display_name = f"Cooking with {sa.name}"
+    if sa.description:
+        desc = sa.description[:50] + "..." if len(sa.description) > 50 else sa.description
+        display_name += f" \u2014 {desc}"
+
+    # --- Compact mode: 1-line summary for completed sub-agents ---
     if compact:
         line = Text()
         if not sa.is_active:
-            line.append("  \u2713 ", style="green")
-            line.append(sa.name, style="bold green")
+            line.append("\u2713 ", style="green")
+            line.append(display_name, style="green dim")
+            total = len(valid_calls)
+            line.append(f" ({total} tools)", style="dim")
         else:
-            line.append("  \u25b6 ", style="cyan")
-            line.append(sa.name, style="bold cyan")
-        if sa.description:
-            desc = sa.description[:50] + "..." if len(sa.description) > 50 else sa.description
-            line.append(f" \u2014 {desc}", style="dim")
+            line.append("\u25b6 ", style="cyan")
+            line.append(display_name, style="bold cyan")
         elements.append(line)
-        # Stats line
-        if valid_calls:
-            stats = Text("    ")
-            stats.append(f"{succeeded} completed", style="dim green")
-            if failed > 0:
-                stats.append(f" \u00b7 {failed} failed", style="dim red")
-            if pending:
-                stats.append(f" \u00b7 {len(pending)} running", style="dim yellow")
-            elements.append(stats)
         return elements
 
     # --- Full mode: bordered section for Live streaming ---
-    # Shows every tool call individually with status indicators
 
     # Header
     header = Text()
-    header.append("  \u250c ", style=BORDER)
+    header.append("\u250c ", style=BORDER)
     if sa.is_active:
-        header.append(sa.name, style="bold cyan")
+        header.append(f"\u25b6 {display_name}", style="bold cyan")
     else:
-        header.append(sa.name, style="bold green")
-        header.append(" \u2713", style="green")
-    if sa.description:
-        desc = sa.description[:55] + "..." if len(sa.description) > 55 else sa.description
-        header.append(f" \u2014 {desc}", style="dim")
+        header.append(f"\u2713 {display_name}", style="bold green")
     elements.append(header)
 
     # Show every tool call with its status
     for tc, tr in completed:
-        tc_line = Text("  \u2502 ", style=BORDER)
+        tc_line = Text("\u2502 ", style=BORDER)
         tc_name = format_tool_compact(tc["name"], tc.get("args"))
         if tr.get("success", True):
             tc_line.append(f"\u2713 {tc_name}", style="green")
         else:
             tc_line.append(f"\u2717 {tc_name}", style="red")
-            # Show first line of error
             content = tr.get("content", "")
             first_line = content.strip().split("\n")[0][:70]
             if first_line:
-                err_line = Text("  \u2502   ", style=BORDER)
+                err_line = Text("\u2502   ", style=BORDER)
                 err_line.append(f"\u2514 {first_line}", style="red dim")
                 elements.append(tc_line)
                 elements.append(err_line)
@@ -790,29 +986,64 @@ def _render_subagent_section(sa: 'SubAgentState', compact: bool = False) -> list
 
     # Pending/running tools
     for tc in pending:
-        tc_line = Text("  \u2502 ", style=BORDER)
+        tc_line = Text("\u2502 ", style=BORDER)
         tc_name = format_tool_compact(tc["name"], tc.get("args"))
         tc_line.append(f"\u25cf {tc_name}", style="bold yellow")
         elements.append(tc_line)
-        spinner_line = Text("  \u2502   ", style=BORDER)
+        spinner_line = Text("\u2502   ", style=BORDER)
         spinner_line.append("\u21bb running...", style="yellow dim")
         elements.append(spinner_line)
 
     # Footer
     if not sa.is_active:
         total = len(valid_calls)
-        footer = Text(f"  \u2514 done ({total} tools)", style="dim green")
+        footer = Text(f"\u2514 done ({total} tools)", style="dim green")
         elements.append(footer)
     elif valid_calls:
-        footer = Text("  \u2514 running...", style="dim cyan")
+        footer = Text("\u2514 running...", style="dim cyan")
         elements.append(footer)
 
     return elements
 
 
+def _render_todo_panel(todo_items: list[dict]) -> Panel:
+    """Render a bordered Task List panel from todo items.
+
+    Matches the style: cyan border, status icons per item.
+    """
+    lines = Text()
+    for i, item in enumerate(todo_items):
+        if i > 0:
+            lines.append("\n")
+        status = str(item.get("status", "todo")).lower()
+        content_text = str(item.get("content", item.get("task", item.get("title", ""))))
+
+        if status in ("done", "completed", "complete"):
+            symbol = "\u2713"  # ✓
+            style = "green dim"
+        elif status in ("active", "in_progress", "in-progress", "working"):
+            symbol = "\u23f3"  # ⏳
+            style = "yellow"
+        else:
+            symbol = "\u25a1"  # □
+            style = "dim"
+
+        lines.append(f"{symbol} ", style=style)
+        lines.append(content_text, style=style)
+
+    return Panel(
+        lines,
+        title="Task List",
+        title_align="center",
+        border_style="cyan",
+        padding=(0, 1),
+    )
+
+
 def create_streaming_display(
     thinking_text: str = "",
     response_text: str = "",
+    latest_text: str = "",
     tool_calls: list | None = None,
     tool_results: list | None = None,
     is_thinking: bool = False,
@@ -821,6 +1052,7 @@ def create_streaming_display(
     is_processing: bool = False,
     show_thinking: bool = True,
     subagents: list | None = None,
+    todo_items: list | None = None,
 ) -> Any:
     """Create Rich display layout for streaming output.
 
@@ -855,61 +1087,95 @@ def create_streaming_display(
 
     # Tool calls and results paired display
     # Collapse older completed tools to prevent overflow in Live mode
+    # Task tool calls are ALWAYS visible (they represent sub-agent delegations)
     MAX_VISIBLE_TOOLS = 4
+    MAX_VISIBLE_RUNNING = 3
 
     if tool_calls:
-        # Split into completed and pending/running
-        completed_tools = []
-        recent_tools = []  # last few completed + all pending
+        # Split into categories
+        completed_regular = []   # completed non-task tools
+        task_tools = []          # task tools (always visible)
+        running_regular = []     # running non-task tools
 
         for i, tc in enumerate(tool_calls):
             has_result = i < len(tool_results)
             tr = tool_results[i] if has_result else None
-            if has_result:
-                completed_tools.append((tc, tr))
+            is_task = tc.get('name') == 'task'
+
+            if is_task:
+                # Skip task calls with empty args (still streaming)
+                if tc.get('args'):
+                    task_tools.append((tc, tr))
+            elif has_result:
+                completed_regular.append((tc, tr))
             else:
-                recent_tools.append((tc, None))
+                running_regular.append((tc, None))
 
-        # Determine how many completed tools to show
-        # Keep the last few completed + all pending within MAX_VISIBLE_TOOLS
-        slots_for_completed = max(0, MAX_VISIBLE_TOOLS - len(recent_tools))
-        hidden_completed = completed_tools[:-slots_for_completed] if slots_for_completed and len(completed_tools) > slots_for_completed else (completed_tools if not slots_for_completed else [])
-        visible_completed = completed_tools[-slots_for_completed:] if slots_for_completed else []
+        # --- Completed regular tools (collapsible) ---
+        slots = max(0, MAX_VISIBLE_TOOLS - len(running_regular))
+        hidden = completed_regular[:-slots] if slots and len(completed_regular) > slots else (completed_regular if not slots else [])
+        visible = completed_regular[-slots:] if slots else []
 
-        # Summary line for hidden completed tools
-        if hidden_completed:
-            ok = sum(1 for _, tr in hidden_completed if is_success(tr.get('content', '')))
-            fail = len(hidden_completed) - ok
+        if hidden:
+            ok = sum(1 for _, tr in hidden if is_success(tr.get('content', '')))
+            fail = len(hidden) - ok
             summary = Text()
             summary.append(f"\u2713 {ok} completed", style="dim green")
             if fail > 0:
                 summary.append(f" | {fail} failed", style="dim red")
             elements.append(summary)
 
-        # Render visible completed tools (compact: 1 line each, no result expansion)
-        for tc, tr in visible_completed:
+        for tc, tr in visible:
             elements.append(_render_tool_call_line(tc, tr))
-            # Only expand result for write_todos (useful) or errors
             content = tr.get('content', '') if tr else ''
-            if tc.get('name') == 'write_todos' or (tr and not is_success(content)):
+            if tr and not is_success(content):
                 result_elements = format_tool_result_compact(
-                    tr['name'],
-                    content,
-                    max_lines=5,
+                    tr['name'], content, max_lines=5,
                 )
                 elements.extend(result_elements)
 
-        # Render pending/running tools (expanded with spinner)
-        for tc, tr in recent_tools:
+        # --- Running regular tools (limit visible) ---
+        hidden_running = len(running_regular) - MAX_VISIBLE_RUNNING
+        if hidden_running > 0:
+            summary = Text()
+            summary.append(f"\u25cf {hidden_running} more running...", style="dim yellow")
+            elements.append(summary)
+            running_regular = running_regular[-MAX_VISIBLE_RUNNING:]
+
+        for tc, tr in running_regular:
             elements.append(_render_tool_call_line(tc, tr))
-            if tc.get('name') != 'task':
-                spinner = Spinner("dots", text=" Running...", style="yellow")
-                elements.append(spinner)
+            spinner = Spinner("dots", text=" Running...", style="yellow")
+            elements.append(spinner)
+
+        # Task tool calls are rendered as part of sub-agent sections below
+
+    # Response text handling
+    has_pending_tools = len(tool_calls) > len(tool_results)
+    any_active_subagent = any(sa.is_active for sa in subagents)
+    has_used_tools = len(tool_calls) > 0
+    all_done = not has_pending_tools and not any_active_subagent and not is_processing
+
+    # Intermediate narration (tools still running) — dim italic above Task List
+    if latest_text and has_used_tools and not all_done:
+        preview = latest_text.strip()
+        if preview:
+            last_line = preview.split("\n")[-1].strip()
+            if last_line:
+                if len(last_line) > 80:
+                    last_line = last_line[:77] + "..."
+                elements.append(Text(f"    {last_line}", style="dim italic"))
+
+    # Task List panel (persistent, updates on write_todos / read_todos)
+    todo_items = todo_items or []
+    if todo_items:
+        elements.append(Text(""))  # blank separator
+        elements.append(_render_todo_panel(todo_items))
 
     # Sub-agent activity sections
+    # Active: full bordered view; Completed: compact 1-line summary
     for sa in subagents:
         if sa.tool_calls or sa.is_active:
-            elements.extend(_render_subagent_section(sa))
+            elements.extend(_render_subagent_section(sa, compact=not sa.is_active))
 
     # Processing state after tool execution
     if is_processing and not is_thinking and not is_responding and not response_text:
@@ -919,25 +1185,10 @@ def create_streaming_display(
             spinner = Spinner("dots", text=" Analyzing results...", style="cyan")
             elements.append(spinner)
 
-    # Response text display logic
-    has_pending_tools = len(tool_calls) > len(tool_results)
-    any_active_subagent = any(sa.is_active for sa in subagents)
-    has_used_tools = len(tool_calls) > 0
-
-    if response_text and not has_pending_tools and not any_active_subagent:
-        if has_used_tools:
-            # Tools were used — treat all text as intermediate during Live streaming.
-            # Final rendering is handled by display_final_results().
-            preview = response_text
-            if len(preview) > 200:
-                preview = "..." + preview[-197:]
-            for line in preview.strip().split("\n")[-3:]:
-                if line.strip():
-                    elements.append(Text(f"    {line.strip()}", style="dim italic"))
-        else:
-            # Pure text response (no tools used) — render as Markdown
-            elements.append(Text(""))  # blank separator
-            elements.append(Markdown(response_text))
+    # Final response — render as Markdown when all work is done
+    if response_text and all_done:
+        elements.append(Text(""))  # blank separator
+        elements.append(Markdown(response_text))
     elif is_responding and not thinking_text and not has_pending_tools:
         elements.append(Text("Generating response...", style="dim"))
 
@@ -1004,6 +1255,11 @@ def display_final_results(
                 for elem in _render_subagent_section(sa, compact=True):
                     console.print(elem)
 
+        console.print()
+
+    # Task List panel in final output
+    if state.todo_items:
+        console.print(_render_todo_panel(state.todo_items))
         console.print()
 
     if state.response_text:
@@ -1126,14 +1382,25 @@ def cmd_interactive(agent: Any, show_thinking: bool = True, workspace_dir: str |
         enable_history_search=True,
     )
 
+    def _print_separator():
+        """Print a horizontal separator line spanning the terminal width."""
+        width = console.size.width
+        console.print(Text("\u2500" * width, style="dim"))
+
+    _print_separator()
     while True:
         try:
             user_input = session.prompt(
-                HTML('<ansigreen><b>You:</b></ansigreen> ')
+                HTML('<ansiblue><b>&gt;</b></ansiblue> ')
             ).strip()
 
             if not user_input:
+                # Erase the empty prompt line so it looks like nothing happened
+                sys.stdout.write("\033[A\033[2K\r")
+                sys.stdout.flush()
                 continue
+
+            _print_separator()
 
             # Special commands
             if user_input.lower() in ("/exit", "/quit", "/q"):
@@ -1160,6 +1427,7 @@ def cmd_interactive(agent: Any, show_thinking: bool = True, workspace_dir: str |
             # Stream agent response
             console.print()
             _run_streaming(agent, user_input, thread_id, show_thinking, interactive=True)
+            _print_separator()
 
         except KeyboardInterrupt:
             console.print("\n[dim]Goodbye![/dim]")
@@ -1180,7 +1448,11 @@ def cmd_run(agent: Any, prompt: str, thread_id: str | None = None, show_thinking
     """
     thread_id = thread_id or str(uuid.uuid4())
 
-    console.print(Panel(f"[bold cyan]Query:[/bold cyan]\n{prompt}"))
+    width = console.size.width
+    sep = Text("\u2500" * width, style="dim")
+    console.print(sep)
+    console.print(Text(f"> {prompt}"))
+    console.print(sep)
     console.print(f"[dim]Thread: {thread_id}[/dim]")
     if workspace_dir:
         console.print(f"[dim]Workspace: {workspace_dir}[/dim]")
