@@ -107,6 +107,70 @@ async def tavily_search(
 
 
 @tool(parse_docstring=True)
+def skill_manager(
+    action: Literal["install", "list", "uninstall"],
+    source: str = "",
+    name: str = "",
+) -> str:
+    """Manage user skills: install, list, or uninstall.
+
+    Use this tool when the user asks to:
+    - Install a skill (action="install", source required)
+    - List installed skills (action="list")
+    - Uninstall a skill (action="uninstall", name required)
+
+    Supported sources for install:
+    - Local path: "./my-skill" or "/path/to/skill"
+    - GitHub URL: "https://github.com/owner/repo/tree/main/skill-name"
+    - GitHub shorthand: "owner/repo@skill-name"
+
+    Args:
+        action: One of "install", "list", or "uninstall"
+        source: For install - local path or GitHub URL/shorthand
+        name: For uninstall - skill name to remove
+
+    Returns:
+        Result message
+    """
+    from .skills_manager import install_skill, list_skills, uninstall_skill
+
+    if action == "install":
+        if not source:
+            return "Error: 'source' is required for install action"
+        result = install_skill(source)
+        if result["success"]:
+            return (
+                f"Successfully installed skill: {result['name']}\n"
+                f"Description: {result.get('description', '(none)')}\n"
+                f"Path: {result['path']}\n\n"
+                f"Use load_skill to activate it."
+            )
+        else:
+            return f"Failed to install skill: {result['error']}"
+
+    elif action == "list":
+        skills = list_skills(include_system=False)
+        if not skills:
+            return "No user skills installed. Use action='install' to add skills."
+        lines = [f"Installed User Skills ({len(skills)}):"]
+        for skill in skills:
+            lines.append(f"  - {skill.name}: {skill.description}")
+        return "\n".join(lines)
+
+    elif action == "uninstall":
+        if not name:
+            return "Error: 'name' is required for uninstall action"
+        result = uninstall_skill(name)
+        if result["success"]:
+            return f"Successfully uninstalled skill: {name}"
+        else:
+            return f"Failed to uninstall skill: {result['error']}"
+
+    else:
+        return f"Unknown action: {action}. Use 'install', 'list', or 'uninstall'."
+
+
+@tool(parse_docstring=True)
 def think_tool(reflection: str) -> str:
     """Tool for strategic reflection on research progress and decision-making.
 

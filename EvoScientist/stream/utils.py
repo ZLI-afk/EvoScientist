@@ -117,18 +117,24 @@ def format_tool_compact(name: str, args: dict | None) -> str:
             cmd = cmd[:47] + "\u2026"
         return f"execute({cmd})"
 
-    # File operations
+    # File operations (with special case for memory files)
     if name_lower == "read_file":
-        path = _shorten_path(args.get("path", ""))
-        return f"read_file({path})"
+        path = args.get("path", "")
+        if path.endswith("/MEMORY.md") or path == "/MEMORY.md":
+            return "Reading memory"
+        return f"read_file({_shorten_path(path)})"
 
     if name_lower == "write_file":
-        path = _shorten_path(args.get("path", ""))
-        return f"write_file({path})"
+        path = args.get("path", "")
+        if path.endswith("/MEMORY.md") or path == "/MEMORY.md":
+            return "Updating memory"
+        return f"write_file({_shorten_path(path)})"
 
     if name_lower == "edit_file":
-        path = _shorten_path(args.get("path", ""))
-        return f"edit_file({path})"
+        path = args.get("path", "")
+        if path.endswith("/MEMORY.md") or path == "/MEMORY.md":
+            return "Updating memory"
+        return f"edit_file({_shorten_path(path)})"
 
     # Search operations
     if name_lower == "glob":

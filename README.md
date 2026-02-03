@@ -125,9 +125,65 @@ or
 ```Shell
 EvoSci # or EvoScientist
 ```
-**Optional arguments:**  
+**Optional arguments:**
 
-> TODO
+```
+--workdir <path>   Override workspace directory for this session
+--use-cwd          Use current working directory as workspace
+--thread-id <id>   Resume a conversation thread
+--no-thinking      Disable thinking display
+```
+
+**Interactive Commands:**
+
+| Command | Description |
+|---------|-------------|
+| `/exit` | Quit the session |
+| `/new` | Start a new session (new workspace + thread) |
+| `/thread` | Show current thread ID and workspace path |
+| `/skills` | List installed user skills |
+| `/install-skill <source>` | Install a skill from local path or GitHub |
+| `/uninstall-skill <name>` | Uninstall a user-installed skill |
+
+**Skill Installation Examples:**
+
+```bash
+# Install from local path
+/install-skill ./my-skill
+
+# Install from GitHub URL
+/install-skill https://github.com/owner/repo/tree/main/skill-name
+
+# Install from GitHub shorthand
+/install-skill owner/repo@skill-name
+```
+
+### Runtime Directories
+
+By default, the **workspace** is created under a hidden directory in the current
+project directory:
+
+```
+./.evoscientist/workspace/
+  memory/   # shared MEMORY.md
+  skills/   # user-installed skills
+  runs/     # per-thread workspaces
+```
+
+You can force workspace to be the current directory via `--use-cwd`.
+
+If you set `EVOSCIENTIST_HOME`, EvoScientist will place `workspace/` under that
+directory instead of the project root:
+
+Example with `EVOSCIENTIST_HOME=~/.evoscientist`:
+
+```
+~/.evoscientist/
+  workspace/
+    memory/
+    skills/
+    runs/
+```
 
 ### Script Inference
 ```python

@@ -65,6 +65,23 @@ class TestFormatToolCompact:
         result = format_tool_compact("edit_file", {"path": "f.py"})
         assert result == "edit_file(f.py)"
 
+    # Memory file special display
+    def test_read_file_memory(self):
+        result = format_tool_compact("read_file", {"path": "/memory/MEMORY.md"})
+        assert result == "Reading memory"
+
+    def test_write_file_memory(self):
+        result = format_tool_compact("write_file", {"path": "/MEMORY.md"})
+        assert result == "Updating memory"
+
+    def test_write_file_memory_with_prefix(self):
+        result = format_tool_compact("write_file", {"path": "/memory/MEMORY.md"})
+        assert result == "Updating memory"
+
+    def test_edit_file_memory(self):
+        result = format_tool_compact("edit_file", {"path": "/memory/MEMORY.md"})
+        assert result == "Updating memory"
+
     def test_glob(self):
         result = format_tool_compact("glob", {"pattern": "*.py"})
         assert result == "glob(*.py)"

@@ -10,6 +10,7 @@ from deepagents.middleware.skills import SkillsMiddleware
 
 from .backends import MergedReadOnlyBackend
 from .memory import EvoMemoryMiddleware
+from .paths import MEMORY_DIR as _DEFAULT_MEMORY_DIR
 
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
@@ -20,6 +21,7 @@ _DEFAULT_SKILLS_DIR = str(Path(__file__).parent / "skills")
 def create_skills_middleware(
     skills_dir: str = _DEFAULT_SKILLS_DIR,
     workspace_dir: str = ".",
+    user_skills_dir: str | None = None,
 ) -> SkillsMiddleware:
     """Create a SkillsMiddleware that loads skills.
 
@@ -29,12 +31,16 @@ def create_skills_middleware(
     Args:
         skills_dir: Path to the system skills directory (package built-in)
         workspace_dir: Path to the project root (user skills live under {workspace_dir}/skills/)
+        user_skills_dir: Optional explicit path for user-installed skills. If set,
+            this path is used directly instead of {workspace_dir}/skills.
 
     Returns:
         Configured SkillsMiddleware instance
     """
+    if user_skills_dir is None:
+        user_skills_dir = str(Path(workspace_dir) / "skills")
     merged = MergedReadOnlyBackend(
-        primary_dir=str(Path(workspace_dir) / "skills"),
+        primary_dir=user_skills_dir,
         secondary_dir=skills_dir,
     )
     return SkillsMiddleware(
@@ -44,7 +50,7 @@ def create_skills_middleware(
 
 
 def create_memory_middleware(
-    memory_dir: str = "./memory/",
+    memory_dir: str = str(_DEFAULT_MEMORY_DIR),
     extraction_model: BaseChatModel | None = None,
     trigger: tuple[str, int] = ("messages", 20),
 ) -> EvoMemoryMiddleware:

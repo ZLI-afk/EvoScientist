@@ -23,6 +23,7 @@ venv/
 .github/
 .cursor/
 .cursorrules
+.evoscientist/
 
 # Project specific
 .langgraph_api/

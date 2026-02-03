@@ -25,7 +25,13 @@ from .backends import CustomSandboxBackend, MergedReadOnlyBackend
 from .middleware import create_skills_middleware, create_memory_middleware
 from .prompts import RESEARCHER_INSTRUCTIONS, get_system_prompt
 from .utils import load_subagents
-from .tools import tavily_search, think_tool
+from .tools import tavily_search, think_tool, skill_manager
+from .paths import (
+    ensure_dirs,
+    default_workspace_dir,
+    MEMORY_DIR as _MEMORY_DIR_PATH,
+    USER_SKILLS_DIR as _USER_SKILLS_DIR_PATH,
+)
 
 # =============================================================================
 # Configuration
@@ -39,9 +45,11 @@ MAX_CONCURRENT = 3  # Max parallel sub-agents
 MAX_ITERATIONS = 3  # Max delegation rounds
 
 # Workspace settings
-WORKSPACE_DIR = "./workspace/"
-MEMORY_DIR = "./memory/"  # Shared across sessions (not per-session)
+ensure_dirs()
+WORKSPACE_DIR = str(default_workspace_dir())
+MEMORY_DIR = str(_MEMORY_DIR_PATH)  # Shared across sessions (not per-session)
 SKILLS_DIR = str(Path(__file__).parent / "skills")
+USER_SKILLS_DIR = str(_USER_SKILLS_DIR_PATH)
 SUBAGENTS_CONFIG = Path(__file__).parent / "subagent.yaml"
 
 # =============================================================================
@@ -79,7 +87,7 @@ else:
 
 # Skills backend: merge user-installed (./skills/) and system (package) skills
 _skills_backend = MergedReadOnlyBackend(
-    primary_dir="./skills/",                             # user-installed, takes priority
+    primary_dir=USER_SKILLS_DIR,                        # user-installed, takes priority
     secondary_dir=SKILLS_DIR,                           # package built-in, fallback
 )
 
@@ -117,12 +125,12 @@ subagents = load_subagents(
 _AGENT_KWARGS = dict(
     name="EvoScientist",
     model=chat_model,
-    tools=[think_tool],
+    tools=[think_tool, skill_manager],
     backend=backend,
     subagents=subagents,
     middleware=[
         create_memory_middleware(MEMORY_DIR, extraction_model=chat_model),
-        create_skills_middleware(SKILLS_DIR, "."),
+        create_skills_middleware(SKILLS_DIR, user_skills_dir=USER_SKILLS_DIR),
     ],
     system_prompt=SYSTEM_PROMPT,
 )
@@ -137,7 +145,7 @@ def create_cli_agent(workspace_dir: str | None = None):
     Args:
         workspace_dir: Optional per-session workspace directory. If provided,
             creates a fresh backend rooted at this path. If None, uses the
-            module-level default backend (./workspace/).
+            module-level default backend (./workspace).
     """
     from langgraph.checkpoint.memory import InMemorySaver  # type: ignore[import-untyped]
 
@@ -148,7 +156,7 @@ def create_cli_agent(workspace_dir: str | None = None):
             timeout=300,
         )
         sk_backend = MergedReadOnlyBackend(
-            primary_dir="./skills/",
+            primary_dir=USER_SKILLS_DIR,
             secondary_dir=SKILLS_DIR,
         )
         # Memory always uses SHARED directory (not per-session) for cross-session persistence
@@ -165,7 +173,7 @@ def create_cli_agent(workspace_dir: str | None = None):
         )
         mw = [
             create_memory_middleware(MEMORY_DIR, extraction_model=chat_model),
-            create_skills_middleware(SKILLS_DIR, "."),
+            create_skills_middleware(SKILLS_DIR, user_skills_dir=USER_SKILLS_DIR),
         ]
         kwargs = dict(
             _AGENT_KWARGS,

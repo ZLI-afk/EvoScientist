@@ -141,7 +141,22 @@ def _render_tool_call_line(tc: dict, tr: dict | None) -> Text:
         style = "bold yellow" if not is_task else "bold cyan"
         indicator = "\u25b6" if is_task else ToolStatus.RUNNING.value
 
+    # Try to get display name from args first
     tool_compact = format_tool_compact(tc['name'], tc.get('args'))
+
+    # If args were empty and we have a result, try to infer memory operations from result
+    tool_name = tc.get('name', '').lower()
+    if tool_name in ('write_file', 'edit_file') and tr is not None:
+        result_content = tr.get('content', '')
+        if '/MEMORY.md' in result_content or 'MEMORY.md' in result_content:
+            tool_compact = "Updating memory"
+    elif tool_name == 'read_file' and tr is not None:
+        result_content = tr.get('content', '')
+        # read_file result doesn't contain path, check if args is empty and result looks like memory
+        args = tc.get('args') or {}
+        if not args.get('path') and '# EvoScientist Memory' in result_content:
+            tool_compact = "Reading memory"
+
     tool_text = Text()
     tool_text.append(f"{indicator} ", style=style)
     tool_text.append(tool_compact, style=style)
