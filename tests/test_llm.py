@@ -37,7 +37,7 @@ class TestModelsRegistry:
             model_id, provider = value
             assert isinstance(model_id, str), f"model_id for '{name}' is not a string"
             assert isinstance(provider, str), f"provider for '{name}' is not a string"
-            assert provider in ("anthropic", "openai", "google-genai", "nvidia"), f"Unknown provider for '{name}': {provider}"
+            assert provider in ("anthropic", "openai", "google-genai", "nvidia", "siliconflow"), f"Unknown provider for '{name}': {provider}"
 
     def test_anthropic_models_have_anthropic_provider(self):
         """Test that claude models use anthropic provider."""
@@ -116,7 +116,7 @@ class TestGetModelInfo:
     def test_returns_correct_info(self):
         """Test that get_model_info returns correct info."""
         model_id, provider = get_model_info("gpt-5-nano")
-        assert model_id == "gpt-5-nano"
+        assert model_id == "gpt-5-nano-2025-08-07"
         assert provider == "openai"
 
 
@@ -159,7 +159,7 @@ class TestGetChatModel:
         get_chat_model("gpt-5-mini")
 
         call_kwargs = mock_init.call_args[1]
-        assert call_kwargs["model"] == "gpt-5-mini"
+        assert call_kwargs["model"] == "gpt-5-mini-2025-08-07"
         assert call_kwargs["model_provider"] == "openai"
 
     @mock.patch("EvoScientist.llm.models.init_chat_model")
