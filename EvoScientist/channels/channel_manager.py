@@ -246,35 +246,8 @@ class AccountManager:
 # ═════════════════════════════════════════════════════════════════════
 
 from .middleware import (
-    InboundMiddleware,
     OutboundMiddlewareBase,
 )
-
-
-class InboundPipeline:
-    """Processes incoming messages through a middleware chain."""
-
-    def __init__(
-        self,
-        plugin: ChannelPlugin,
-        middlewares: list[InboundMiddleware],
-    ) -> None:
-        self.plugin = plugin
-        self.middlewares = middlewares
-
-    async def process(
-        self,
-        raw: RawIncoming,
-        context: dict[str, Any] | None = None,
-    ) -> RawIncoming | None:
-        """Run *raw* through each middleware.  Returns ``None`` if dropped."""
-        ctx = context or {}
-        current: RawIncoming | None = raw
-        for mw in self.middlewares:
-            if current is None:
-                return None
-            current = await mw.process_inbound(current, ctx)
-        return current
 
 
 class OutboundPipeline:

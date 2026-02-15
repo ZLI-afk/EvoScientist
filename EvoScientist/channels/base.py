@@ -6,7 +6,6 @@ This module defines the Channel interface that all messaging channels
 
 from abc import ABC, abstractmethod
 import asyncio
-import dataclasses
 import logging
 import re
 from collections import defaultdict
@@ -296,9 +295,9 @@ class Channel(ChannelPlugin, ABC):
         # DM policy: "open" | "allowlist" | "pairing"
         self.dm_policy: str = getattr(config, "dm_policy", "allowlist")
 
-        # Shared pairing manager for DM pairing mode
-        from .middleware import PairingManager
-        self._pairing_manager = PairingManager()
+        # Per-sender is_group / was_mentioned for debounce merge
+        self._message_is_group: dict[str, bool] = {}
+        self._message_was_mentioned: dict[str, bool] = {}
 
         # Retry configuration (auto-resolved from channel name)
         from .retry import RetryConfig, DEFAULT_RETRY, RETRY_PRESETS
@@ -712,11 +711,6 @@ class Channel(ChannelPlugin, ABC):
 
     # ── Mention gating ──────────────────────────────────────────────
 
-    async def _send_pairing_response(self, chat_id: str, code: str):
-        """Send pairing code to the sender."""
-        text = f"🔐 Pairing required. Your code: {code}\nThis code expires in 1 hour."
-        await self._send_chunk(chat_id, text, text, None, {})
-
     def _should_process(self, raw: RawIncoming) -> bool:
         """Decide whether to process a message based on mention gating."""
         if self.require_mention == "off":
@@ -785,82 +779,6 @@ class Channel(ChannelPlugin, ABC):
             is_group=raw.is_group, was_mentioned=raw.was_mentioned,
         )
 
-    def _build_inbound(self, raw: RawIncoming) -> InboundMessage | None:
-        """Build an ``InboundMessage`` from raw platform data.
-
-        .. deprecated::
-            This method is superseded by the middleware pipeline in
-            ``_enqueue_raw()``.  It is kept for backward compatibility
-            with tests that call it directly.  New code should use
-            ``_enqueue_raw()`` instead.
-
-        Performs mention gating, allow-list checks, and merges text +
-        annotations into a single content string.  Returns ``None`` if
-        the message should be dropped (not mentioned, sender not
-        allowed, no content, etc.).
-        """
-        if not self._should_process(raw):
-            return None
-
-        # DM policy handling for non-group messages
-        if not raw.is_group:
-            if self.dm_policy == "open":
-                pass  # skip allowlist check for DMs
-            elif self.dm_policy == "pairing":
-                if not self.is_allowed(raw.sender_id) and not self._pairing_manager.is_approved(self.name, raw.sender_id):
-                    code = self._pairing_manager.request_pairing(self.name, raw.sender_id)
-                    # Schedule pairing response (fire-and-forget)
-                    asyncio.ensure_future(self._send_pairing_response(raw.chat_id, code))
-                    _logger.info(f"Pairing required for {raw.sender_id}, code sent")
-                    return None
-            else:  # "allowlist" (default)
-                if not self.is_allowed(raw.sender_id):
-                    _logger.debug(
-                        f"Ignoring message from non-allowed sender {raw.sender_id}"
-                    )
-                    return None
-        elif not self.is_allowed(raw.sender_id):
-            _logger.debug(
-                f"Ignoring message from non-allowed sender {raw.sender_id}"
-            )
-            return None
-
-        # Check channel allow-list
-        if not self.is_channel_allowed(raw.chat_id):
-            _logger.debug(
-                f"Ignoring message from non-allowed channel {raw.chat_id}"
-            )
-            return None
-
-        # Apply mention stripping in group messages
-        if raw.is_group:
-            raw = dataclasses.replace(raw, text=self._strip_mention(raw.text))
-
-        # Merge text and annotations into content
-        parts: list[str] = []
-        if raw.text:
-            parts.append(raw.text)
-        parts.extend(raw.content_annotations)
-
-        content = "\n".join(p for p in parts if p)
-        if not content and not raw.media_files:
-            return None
-
-        # Ensure chat_id is in metadata
-        meta = dict(raw.metadata)
-        meta.setdefault("chat_id", raw.chat_id)
-
-        return InboundMessage(
-            channel=self.name,
-            sender_id=raw.sender_id,
-            chat_id=raw.chat_id,
-            content=content or "[media only]",
-            timestamp=raw.timestamp,
-            message_id=raw.message_id,
-            media=raw.media_files,
-            metadata=meta,
-        )
-
     async def _enqueue_raw(self, raw: RawIncoming) -> None:
         """Run *raw* through the inbound middleware pipeline, convert to
         InboundMessage, and put it on the queue.
@@ -899,6 +817,8 @@ class Channel(ChannelPlugin, ABC):
             self._message_buffers[sender] = []
             self._message_metadata[sender] = msg.metadata
             self._message_media[sender] = []
+            self._message_is_group[sender] = msg.is_group
+            self._message_was_mentioned[sender] = msg.was_mentioned
         self._message_buffers[sender].append(msg.content)
         if msg.message_id:
             self._message_ids[sender] = msg.message_id
@@ -940,6 +860,8 @@ class Channel(ChannelPlugin, ABC):
         metadata = self._message_metadata.pop(sender, None)
         media = self._message_media.pop(sender, [])
         message_id = self._message_ids.pop(sender, "")
+        is_group = self._message_is_group.pop(sender, False)
+        was_mentioned = self._message_was_mentioned.pop(sender, True)
         self._debounce_tasks.pop(sender, None)
         if not messages:
             return
@@ -959,6 +881,8 @@ class Channel(ChannelPlugin, ABC):
                 media=media,
                 metadata=metadata or {},
                 message_id=message_id,
+                is_group=is_group,
+                was_mentioned=was_mentioned,
             )
             await self._bus.publish_inbound(inbound)
 
