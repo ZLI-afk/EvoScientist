@@ -119,6 +119,7 @@ class WeChatChannel(Channel, WebhookMixin, TokenMixin):
         self._site = None
         self._http_client = None
         self._crypto = None  # WeChatCrypto instance (optional)
+        self._typing_message_ids: dict[str, list[str]] = {}  # chat_id → [msgid, ...] for typing recall
 
     # ── Lifecycle ─────────────────────────────────────────────────
 
@@ -800,6 +801,65 @@ class WeChatChannel(Channel, WebhookMixin, TokenMixin):
 
         return data
 
-    # _send_typing_action: inherited no-op (WeChat has no typing API)
+    # ── Typing indicator (WeCom only) ────────────────────────────
+
+    async def _send_typing_action(self, chat_id: str) -> None:
+        """Send typing indicator via WeChat.
+
+        WeChat has no native typing API.  For the WeCom backend we
+        approximate the experience by posting a short-lived "…" message
+        that is recalled once the real reply is sent (handled by
+        ``stop_typing``).  WeChat MP has no recall API so we skip it.
+        """
+        if self._backend != "wecom" or not self._http_client:
+            return
+        try:
+            token = await self._ensure_token()
+            if chat_id.startswith("wr"):
+                url = (
+                    f"https://qyapi.weixin.qq.com/cgi-bin/appchat/send"
+                    f"?access_token={token}"
+                )
+                body = {
+                    "chatid": chat_id,
+                    "msgtype": "text",
+                    "text": {"content": "\u2026"},
+                }
+            else:
+                url = (
+                    f"https://qyapi.weixin.qq.com/cgi-bin/message/send"
+                    f"?access_token={token}"
+                )
+                body = {
+                    "touser": chat_id,
+                    "msgtype": "text",
+                    "agentid": int(self.config.agent_id),
+                    "text": {"content": "\u2026"},
+                }
+            data = await self._post_api(url, body)
+            msgid = data.get("msgid")
+            if msgid:
+                self._typing_message_ids.setdefault(chat_id, []).append(msgid)
+        except Exception:
+            pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Cancel typing loop and recall all status messages."""
+        msgids = self._typing_message_ids.pop(chat_id, [])
+        if msgids and self._http_client and self._backend == "wecom":
+            try:
+                token = await self._ensure_token()
+                url = (
+                    f"https://qyapi.weixin.qq.com/cgi-bin/message/recall"
+                    f"?access_token={token}"
+                )
+                for msgid in msgids:
+                    try:
+                        await self._http_client.post(url, json={"msgid": msgid})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        await super().stop_typing(chat_id)
 
 
