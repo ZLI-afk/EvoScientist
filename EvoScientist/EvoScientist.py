@@ -154,6 +154,17 @@ def _load_mcp_tools_cached() -> dict[str, list]:
     return {k: list(v) for k, v in loaded.items()}
 
 
+def _inject_subagent_middleware(subs: list[dict]) -> None:
+    """Ensure every subagent gets ToolErrorHandlerMiddleware.
+
+    Without this, subagent tool errors are caught by LangGraph's default
+    ToolNode handler which produces terse messages without tracebacks or
+    retry guidance — reducing the subagent's ability to self-recover.
+    """
+    for sa in subs:
+        sa.setdefault("middleware", []).append(ToolErrorHandlerMiddleware())
+
+
 def _build_base_kwargs(base_backend, base_middleware):
     """Build agent kwargs *without* MCP (fast, no subprocess spawning)."""
     subs = load_subagents(
@@ -161,6 +172,7 @@ def _build_base_kwargs(base_backend, base_middleware):
         tool_registry=tool_registry,
         prompt_refs=prompt_refs,
     )
+    _inject_subagent_middleware(subs)
     return dict(
         name="EvoScientist",
         model=chat_model,
@@ -196,6 +208,8 @@ def load_mcp_and_build_kwargs(base_backend, base_middleware):
         tool_registry=registry,
         prompt_refs=prompt_refs,
     )
+
+    _inject_subagent_middleware(subs)
 
     # Inject MCP tools into subagents by name
     for sa in subs:
