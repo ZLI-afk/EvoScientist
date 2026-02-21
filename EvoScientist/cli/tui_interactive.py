@@ -178,8 +178,10 @@ def run_textual_interactive(
         from textual.app import App, ComposeResult
         from textual.binding import Binding
         from textual.containers import Container, Horizontal, VerticalScroll
+        from textual.events import MouseUp
         from textual.widgets import Input, Static
 
+        from .clipboard import copy_selection_to_clipboard
         from .widgets import (
             LoadingWidget,
             ThinkingWidget,
@@ -923,6 +925,12 @@ def run_textual_interactive(
                 f"[{msg.channel_type}: Replied to {msg.sender}]",
                 style="dim",
             )
+
+        # ── Clipboard (copy on mouse select) ─────────────────
+
+        def on_mouse_up(self, event: MouseUp) -> None:
+            """Copy mouse-selected text to clipboard on release."""
+            copy_selection_to_clipboard(self)
 
         # ── Input handling ─────────────────────────────────────
 
@@ -1695,21 +1703,17 @@ def run_textual_interactive(
         def _render_status(self) -> None:
             status = self.query_one("#status", Static)
             if self._busy:
-                left = "thinking..."
+                left = "vibe researching..."
                 left_style = "bold #f59e0b"
             else:
-                left = "manual | /help for commands"
+                left = "/help for commands"
                 left_style = "#f59e0b"
-
-            model_label = model or "default-model"
-            if provider and model:
-                model_label = f"{provider}:{model}"
 
             status.update(
                 Text.assemble(
                     (left, left_style),
                     ("  ", ""),
-                    (model_label, "dim"),
+                    ("EvoScientist", "dim"),
                 )
             )
 
