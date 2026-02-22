@@ -1,11 +1,10 @@
 <!-- Add logo here -->
 <div align="center">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
-      <img alt="EvoScientist Logo" src=".github/images/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: light)" srcset=".github/assets/logo-dark.svg">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-light.svg">
+      <img alt="EvoScientist Logo" src=".github/assets/logo-dark.svg" width="80%">
     </picture>
-  </a>
 </div>
 
 <div align="center">
@@ -159,7 +158,7 @@ TAVILY_API_KEY=your_tavily_api_key_here
 ### CLI Inference  
 You can perform inference directly from the command line using our CLI tool:
 
-![demo](./assets/EvoScientist_cli.png)
+![demo](.github/assets/EvoScientist_cli.png)
 
 ```Shell
 python -m EvoScientist 
@@ -185,7 +184,7 @@ EvoSci # or EvoScientist
 > In `--ui textual` mode, the built-in TUI commands are:
 > `/help`, `/current`, `/new`, `/clear`, `/threads`, `/resume <id>`, `/delete <id>`, `/exit`.
 
-![demo](./assets/EvoScientist_cli_help.png)
+![demo](.github/assets/EvoScientist_cli_help.png)
 
 **Configuration commands:**
 
