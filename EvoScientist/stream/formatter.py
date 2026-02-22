@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, List
 
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
@@ -123,7 +124,7 @@ class ToolResultFormatter:
         display = truncate(content, max_length)
         return [Panel(
             Text(display, style="green"),
-            title=f"{name} OK",
+            title=f"{escape(name)} OK",
             border_style="green",
         )]
 
@@ -131,7 +132,7 @@ class ToolResultFormatter:
         display = truncate(content, max_length)
         return [Panel(
             Text(display, style="red"),
-            title=f"{name} FAILED",
+            title=f"{escape(name)} FAILED",
             border_style="red",
         )]
 
@@ -155,7 +156,7 @@ class ToolResultFormatter:
         display = truncate(content, max_length)
         return [Panel(
             Markdown(display),
-            title=f"{name}",
+            title=escape(name),
             border_style="cyan dim",
         )]
 

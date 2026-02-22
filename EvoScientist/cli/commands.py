@@ -10,6 +10,8 @@ from typing import Any, Optional
 import typer  # type: ignore[import-untyped]
 from rich.table import Table
 
+from rich.markup import escape
+
 from ..stream.display import console
 from ..paths import ensure_dirs, set_workspace_root
 from ._app import app, config_app, mcp_app, channel_app
@@ -213,9 +215,9 @@ def config_set(
     from ..config import set_config_value
 
     if set_config_value(key, value):
-        console.print(f"[green]Set {key}[/green]")
+        console.print(f"[green]Set {escape(key)}[/green]")
     else:
-        console.print(f"[red]Invalid key: {key}[/red]")
+        console.print(f"[red]Invalid key: {escape(key)}[/red]")
         raise typer.Exit(1)
 
 
@@ -572,7 +574,7 @@ def _configure_logging():
             if record.levelno == logging.WARNING:
                 # Use Rich console to print dim warning
                 msg = record.getMessage()
-                console.print(f"[dim yellow]\u26a0\ufe0f  Warning:[/dim yellow] [dim]{msg}[/dim]")
+                console.print(f"[dim yellow]\u26a0\ufe0f  Warning:[/dim yellow] [dim]{escape(msg)}[/dim]")
             else:
                 super().emit(record)
 

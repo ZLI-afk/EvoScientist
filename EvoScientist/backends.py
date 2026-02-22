@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 import uuid
 from pathlib import Path
 
@@ -24,7 +25,6 @@ _SYSTEM_PATH_PREFIXES = (
 
 # Dangerous patterns that could escape the workspace
 BLOCKED_PATTERNS = [
-    r'\.\.',              # ../ directory traversal
     r'~/',                # home directory
     r'\bcd\s+/',          # cd to absolute path
     r'\brm\s+-rf\s+/',    # rm -rf with absolute path
@@ -42,6 +42,38 @@ BLOCKED_COMMANDS = [
 ]
 
 
+def _split_shell_commands(command: str) -> list[str]:
+    """Split a compound shell command into individual base commands.
+
+    Handles &&, ||, ;, and | operators. Returns base command names.
+    """
+    base_commands: list[str] = []
+    # Split by sequential operators first
+    for segment in re.split(r'\s*(?:&&|\|\||;)\s*', command):
+        # Then split by pipe
+        for pipe_seg in segment.split("|"):
+            pipe_seg = pipe_seg.strip()
+            if not pipe_seg:
+                continue
+            try:
+                tokens = shlex.split(pipe_seg)
+            except ValueError:
+                tokens = pipe_seg.split()
+            if tokens:
+                base_commands.append(tokens[0])
+    return base_commands
+
+
+def _has_traversal_component(command: str) -> bool:
+    """Check if command contains '..' as a path component (not substring)."""
+    from pathlib import PurePosixPath
+
+    for token in command.split():
+        if ".." in PurePosixPath(token).parts:
+            return True
+    return False
+
+
 def validate_command(command: str) -> str | None:
     """
     Validate a shell command for safety.
@@ -49,7 +81,15 @@ def validate_command(command: str) -> str | None:
     Returns:
         None if command is safe, error message string if blocked.
     """
-    # Check for directory traversal and dangerous patterns
+    # Check for '..' path traversal as a path component
+    if _has_traversal_component(command):
+        return (
+            "Command blocked: contains '..' path traversal. "
+            "All commands must operate within the workspace directory. "
+            "Use relative paths (e.g., './file.py') instead."
+        )
+
+    # Check for dangerous patterns
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, command):
             return (
@@ -58,11 +98,11 @@ def validate_command(command: str) -> str | None:
                 f"Use relative paths (e.g., './file.py') instead."
             )
 
-    # Check for dangerous commands
-    for cmd in BLOCKED_COMMANDS:
-        if re.search(rf'\b{cmd}\b', command):
+    # Check for dangerous commands (pipeline-aware)
+    for base_cmd in _split_shell_commands(command):
+        if base_cmd in BLOCKED_COMMANDS:
             return (
-                f"Command blocked: '{cmd}' is not allowed in sandbox mode. "
+                f"Command blocked: '{base_cmd}' is not allowed in sandbox mode. "
                 f"Only standard development commands are permitted."
             )
 
@@ -328,7 +368,7 @@ class CustomSandboxBackend(LocalShellBackend):
 
         return super()._resolve_path(key)
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """
         Execute shell command in sandbox environment.
 
@@ -362,4 +402,4 @@ class CustomSandboxBackend(LocalShellBackend):
             )
 
         # Delegate to parent for subprocess execution
-        return super().execute(command)
+        return super().execute(command, timeout=timeout)

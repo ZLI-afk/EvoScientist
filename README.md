@@ -1,13 +1,14 @@
 <!-- Add logo here -->
-<h1 align="center">
-  <img src="./assets/EvoScientist_logo.png" alt="EvoScientist Logo" height="27" style="position: relative; top: 1px;"/>
-  <strong>EvoScientist</strong>
-</h1>
-
+<div align="center">
+    <picture>
+      <source media="(prefers-color-scheme: light)" srcset=".github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: dark)" srcset=".github/images/logo-light.svg">
+      <img alt="EvoScientist Logo" src=".github/images/logo-dark.svg" width="80%">
+    </picture>
+  </a>
+</div>
 
 <div align="center">
-
-<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&width=435&lines=Towards+Self-Evolving+AI+Scientists+for+End-to-End+Scientific+Discovery" alt="Typing SVG" /></a>
 
 [![PyPI](https://img.shields.io/badge/PyPI-EvoScientist%20v0.0.1-3da9fc?style=for-the-badge&logo=python&logoColor=3da9fc)](https://pypi.org/project/EvoScientist/)
 [![Project Page](https://img.shields.io/badge/Project-Page-ff8e3c?style=for-the-badge&logo=googlelens&logoColor=ff8e3c)]()
@@ -15,6 +16,8 @@
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-xxxx.xxxx-b31b1b?style=for-the-badge&logo=arxiv&logoColor=b31b1b)]() -->
 <!-- [![Gradio Demo](https://img.shields.io/badge/Gradio-Online_Demo-FFCC00?style=for-the-badge&logo=gradio&logoColor=yellow&labelColor=grey)]()
 [![Evaluation Split](https://img.shields.io/badge/HF-Test_Dataset-AECBFA?style=for-the-badge&logo=huggingface&logoColor=FFCC00&labelColor=grey)]() -->
+
+<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Fira+Code&pause=1000&width=435&lines=Towards+Self-Evolving+AI+Scientists+for+End-to-End+Scientific+Discovery" alt="Typing SVG" /></a>
 
 </div>
 

@@ -16,6 +16,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory  # type: ignore[i
 from prompt_toolkit.formatted_text import HTML  # type: ignore[import-untyped]
 from prompt_toolkit.shortcuts import CompleteStyle  # type: ignore[import-untyped]
 from prompt_toolkit.styles import Style as PtStyle  # type: ignore[import-untyped]
+from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -236,11 +237,11 @@ def cmd_interactive(
         if len(similar) == 1:
             return similar[0]
         if len(similar) > 1:
-            console.print(f"[yellow]Ambiguous thread ID '{tid}'. Matches:[/yellow]")
+            console.print(f"[yellow]Ambiguous thread ID '{escape(tid)}'. Matches:[/yellow]")
             for s in similar:
                 console.print(f"  [cyan]{s}[/cyan]")
             return None
-        console.print(f"[red]Thread '{tid}' not found.[/red]")
+        console.print(f"[red]Thread '{escape(tid)}' not found.[/red]")
         return None
 
     async def _cmd_threads():
@@ -701,7 +702,7 @@ def cmd_interactive(
                             state["running"] = False
                             break
                         else:
-                            console.print(f"[red]Error: {e}[/red]")
+                            console.print(f"[red]Error: {escape(str(e))}[/red]")
             finally:
                 queue_task.cancel()
                 try:

@@ -297,3 +297,73 @@ class TestExecuteStderr:
         resp = backend.execute("echo ok")
         assert resp.exit_code == 0
         assert "Exit code:" not in resp.output
+
+
+# === execute() timeout kwarg ===
+
+class TestExecuteTimeout:
+    def test_execute_accepts_timeout_kwarg(self, tmp_workspace):
+        backend = CustomSandboxBackend(root_dir=tmp_workspace, virtual_mode=True)
+        resp = backend.execute("echo hello", timeout=60)
+        assert resp.exit_code == 0
+        assert "hello" in resp.output
+
+    def test_execute_timeout_none_uses_default(self, tmp_workspace):
+        backend = CustomSandboxBackend(root_dir=tmp_workspace, virtual_mode=True)
+        resp = backend.execute("echo ok", timeout=None)
+        assert resp.exit_code == 0
+
+    def test_execute_accepts_timeout_introspection(self):
+        from deepagents.backends.protocol import execute_accepts_timeout
+        execute_accepts_timeout.cache_clear()
+        assert execute_accepts_timeout(CustomSandboxBackend) is True
+
+
+# === '..' traversal false-positive fix ===
+
+class TestTraversalFalsePositiveFix:
+    def test_dotdot_in_filename_allowed(self):
+        assert validate_command("echo foo..bar.txt") is None
+
+    def test_dotdot_path_component_still_blocked(self):
+        result = validate_command("cat ../secret")
+        assert result is not None
+        assert "blocked" in result.lower()
+
+    def test_dotdot_nested_still_blocked(self):
+        result = validate_command("cat foo/../../etc/passwd")
+        assert result is not None
+
+
+# === Pipeline command validation ===
+
+class TestPipelineCommandValidation:
+    def test_pipe_blocked_command(self):
+        """sudo after pipe should be caught."""
+        result = validate_command("echo hi | sudo tee /etc/passwd")
+        assert result is not None
+        assert "sudo" in result
+
+    def test_chained_blocked_command(self):
+        """chmod after && should be caught."""
+        result = validate_command("echo ok && chmod 777 file")
+        assert result is not None
+        assert "chmod" in result
+
+    def test_semicolon_blocked_command(self):
+        """dd after ; should be caught."""
+        result = validate_command("echo start ; dd if=/dev/zero of=disk")
+        assert result is not None
+        assert "dd" in result
+
+    def test_safe_pipe_allowed(self):
+        """Normal pipes should be fine."""
+        assert validate_command("cat file.txt | grep pattern") is None
+
+    def test_safe_chain_allowed(self):
+        """Normal && chains should be fine."""
+        assert validate_command("mkdir build && cd build") is None
+
+    def test_quoted_pipe_not_split(self):
+        """Pipe inside quotes is not a shell operator."""
+        assert validate_command("echo 'hello | world'") is None

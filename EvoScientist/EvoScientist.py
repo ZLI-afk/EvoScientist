@@ -64,8 +64,6 @@ SUBAGENTS_CONFIG = Path(__file__).parent / "subagent.yaml"
 # Initialization
 # =============================================================================
 
-# Get current date
-current_date = datetime.now().strftime("%Y-%m-%d")
 
 # Generate system prompt with limits
 SYSTEM_PROMPT = get_system_prompt(
@@ -170,7 +168,7 @@ def _build_base_kwargs(base_backend, base_middleware):
     subs = load_subagents(
         SUBAGENTS_CONFIG,
         tool_registry=tool_registry,
-        prompt_refs=prompt_refs,
+        prompt_refs=_build_prompt_refs(),
     )
     _inject_subagent_middleware(subs)
     return dict(
@@ -206,7 +204,7 @@ def load_mcp_and_build_kwargs(base_backend, base_middleware):
     subs = load_subagents(
         SUBAGENTS_CONFIG,
         tool_registry=registry,
-        prompt_refs=prompt_refs,
+        prompt_refs=_build_prompt_refs(),
     )
 
     _inject_subagent_middleware(subs)
@@ -228,9 +226,13 @@ def load_mcp_and_build_kwargs(base_backend, base_middleware):
     )
 
 
-prompt_refs = {
-    "RESEARCHER_INSTRUCTIONS": RESEARCHER_INSTRUCTIONS.format(date=current_date),
-}
+def _build_prompt_refs() -> dict:
+    """Build prompt references with the current date (not frozen at import)."""
+    return {
+        "RESEARCHER_INSTRUCTIONS": RESEARCHER_INSTRUCTIONS.format(
+            date=datetime.now().strftime("%Y-%m-%d"),
+        ),
+    }
 
 base_middleware = [
     ToolErrorHandlerMiddleware(),

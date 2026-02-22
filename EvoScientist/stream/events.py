@@ -4,6 +4,7 @@ Async generator that streams events from an agent graph,
 plus helpers for processing AI message chunks and tool results.
 """
 
+import asyncio
 import base64
 import mimetypes
 import os
@@ -260,15 +261,19 @@ async def stream_agent_events(
         content_blocks: list[dict[str, Any]] = []
         if message:
             content_blocks.append({"type": "text", "text": message})
+        def _read_file_b64(path: str) -> str:
+            with open(path, "rb") as fh:
+                return base64.b64encode(fh.read()).decode("ascii")
+
         file_refs: list[str] = []
         for path in media:
             ext = os.path.splitext(path)[1].lower()
-            if ext in _IMAGE_EXTS and os.path.isfile(path):
-                fsize = os.path.getsize(path)
+            is_image = ext in _IMAGE_EXTS and await asyncio.to_thread(os.path.isfile, path)
+            if is_image:
+                fsize = await asyncio.to_thread(os.path.getsize, path)
                 if fsize <= _MAX_INLINE_SIZE:
                     mime = mimetypes.guess_type(path)[0] or "image/png"
-                    with open(path, "rb") as fh:
-                        b64 = base64.b64encode(fh.read()).decode("ascii")
+                    b64 = await asyncio.to_thread(_read_file_b64, path)
                     content_blocks.append({"type": "image_url", "image_url": {
                         "url": f"data:{mime};base64,{b64}",
                     }})
