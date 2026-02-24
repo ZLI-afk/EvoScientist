@@ -1,4 +1,3 @@
-<!-- Add logo here -->
 <div align="center">
     <picture>
       <source media="(prefers-color-scheme: light)" srcset=".github/assets/logo-dark.svg">
@@ -27,246 +26,216 @@
 </picture></a>
 </div>
 
+---
+
 <div align="center">
-<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.demolab.com?font=Sans-Serif&pause=1000&color=64B5F6&center=true&vCenter=true&width=435&lines=Towards+Self-Evolving+AI+Scientists;Harness+Vibe-Driven+Research" alt="Typing SVG" /></a>
+<a href="https://github.com/EvoScientist/EvoScientist"><img src="https://readme-typing-svg.demolab.com?font=Sans-Serif&pause=1000&color=64B5F6&center=true&vCenter=true&width=435&lines=Towards+Self-Evolving+AI+Scientists;Harness+Vibe+Research" alt="Typing SVG" /></a>
 </div>
 
+<div align="center">
+
+**English | [简体中文](./README.zh-CN.md)**
+
+</div>
+
+***EvoScientist aims to harness vibe research by enabling self-evolving AI scientists that autonomously explore, generate insights, and iteratively improve.
+It is designed to be opinionated and ready to use out of the box, offering a living research system that grows alongside evolving agent skills, toolsets, and memory bases.
+Going beyond traditional human-in-the-loop systems, EvoScientist introduces an AI-in-human’s-loop paradigm, where AI acts as a research buddy that co-evolves with human researchers and internalises scholarly taste and scientific judgement.***
+
+<h3>Unified Control, Different Surfaces</h3>
+[TODO: Add a Demo to demonstrate the different interfaces (TUI, mobile) and how they connect to the same underlying proxy system.]
+<!-- <a href="https://github.com/EvoScientist/EvoScientist">
+<img width="100%" src="https://github.com/EvoScientist/EvoScientist/tree/main/.github/assets/EvoScientist_demo.gif?raw=true"></a> -->
+
+## ✨ Features
+> [!NOTE]
+> - **🤖 Multi-Agent Team** — 6 sub-agents (plan, research, code, debug, analyze, write) working in concert.
+> - **🧠 Persistent Memory** — Context, preferences, and findings survive across sessions.
+> - **🔬 Scientific Workflow** — Intake → plan → execute → evaluate → write → verify.
+> - **🌐 Multi-Provider** — Anthropic, OpenAI, Google, NVIDIA — one config to switch.
+> - **📱 Multi-Channel** — CLI as the hub; Telegram, Discord, Slack, Feishu, WeChat, and more feed into one agent session.
+> - **🔌 MCP & Skills** — Plug in MCP servers or install skills from GitHub on the fly.
 
 ## 🔥 News
-> TODO
-- **[27 Sep 2025]** ⛳ Our preprint is now live on [arXiv] — check it out for details.
+- **[27 Feb 2026]** ⛳ EvoScientist officially debuts!
 
-## Overview
-> TODO
+## 📖 Table of Contents
 
-## 📖 Contents
-- [🤖 Supported Models](#-supported-models)
-- [⛏️ Installation](#️-installation)
-- [🔑 API Key Configuration](#-api-key-configuration)
+- [📦 Installation](#-installation)
+- [🔑 Configuration](#-configuration)
 - [⚡ Quick Start](#-quick-start)
-  - [CLI Inference](#cli-inference)
-  - [Script Inference](#script-inference)
-  - [Web Interface](#web-interface)
-- [💬 Channels](#-channels)
 - [🔌 MCP Integration](#-mcp-integration)
-- [📊 Evaluation](#-evaluation)
-- [📝 Citation](#-citation)
+- [📱 Channels](#-channels)
 - [📚 Acknowledgments](#-acknowledgments)
-- [📦 EvoScientist Team](#-evoscientist-team)
-- [📜 License](#-license)
+- [🏛️ EvoScientist Team](#-evoscientist-team)
+- [🤝 Contributing](#-contributing)
 
-## 🤖 Supported Models
+## 📦 Installation
 
-| Provider | Short Name | Model ID |
-|----------|-----------|----------|
-| Anthropic | `claude-opus-4-6` | `claude-opus-4-6` |
-| Anthropic | `claude-opus-4-5` | `claude-opus-4-5-20251101` |
-| Anthropic | `claude-sonnet-4-5` | `claude-sonnet-4-5-20250929` |
-| Anthropic | `claude-haiku-4-5` | `claude-haiku-4-5-20251001` |
-| OpenAI | `gpt-4o` | `gpt-4o` |
-| OpenAI | `gpt-4o-mini` | `gpt-4o-mini` |
-| OpenAI | `o1` | `o1` |
-| OpenAI | `o1-mini` | `o1-mini` |
-| Google | `gemini-3-pro` | `gemini-3-pro-preview` |
-| Google | `gemini-3-flash` | `gemini-3-flash-preview` |
-| Google | `gemini-2.5-pro` | `gemini-2.5-pro` |
-| Google | `gemini-2.5-flash` | `gemini-2.5-flash` |
-| Google | `gemini-2.5-flash-lite` | `gemini-2.5-flash-lite` |
-| NVIDIA | `glm4.7` | `z-ai/glm4.7` |
-| NVIDIA | `deepseek-v3.1` | `deepseek-ai/deepseek-v3.1-terminus` |
-| NVIDIA | `nemotron-nano` | `nvidia/nemotron-3-nano-30b-a3b` |
+> [!NOTE]
+> Requires **Python 3.11+**. A virtual environment is recommended.
 
-You can also use any full model ID directly — the provider will be inferred automatically.
+### Quick Install
 
-## ⛏️ Installation
-
-> [!TIP]  
-> Use [`uv`](https://pypi.org/project/uv) for installation — it's faster and more reliable than `pip`.
-### For Development
-
-```Shell
-# Create and activate a conda environment
-conda create -n EvoSci python=3.11 -y
-conda activate EvoSci
-
-# Install in development (editable) mode
+```bash
 pip install EvoScientist
-# or
-pip install -e .
 ```
 
-### Option 1:
-Install the latest version directly from GitHub for quick setup:
-> TODO
-### Option 2: 
-If you plan to modify the code or contribute to the project, you can clone the repository and install it in editable mode:
+### Development Install
 
-> TODO
+```bash
+git clone https://github.com/EvoScientist/EvoScientist.git
+cd EvoScientist
+pip install -e ".[dev]"
+```
 
 <details>
-<summary> 🔄 Upgrade to the latest code base </summary>
+<summary>Using conda</summary>
 
-```Shell
-git pull
-uv pip install -e .
+```bash
+conda create -n EvoSci python=3.11 -y
+conda activate EvoSci
+pip install -e ".[dev]"
 ```
 
 </details>
 
-## 🔑 API Key Configuration
+<details>
+<summary>Upgrade to latest</summary>
 
-EvoScientist requires API keys for LLM inference and web search. You can configure them in three ways:
+```bash
+git pull && pip install -e ".[dev]"
+```
 
-### Option A: Interactive Setup Wizard (Recommended)
+</details>
 
-```Shell
+## 🔑 Configuration
+
+The easiest way to configure API keys is the interactive wizard:
+
+```bash
 EvoSci onboard
 ```
 
-The wizard guides you through selecting a provider, entering API keys, choosing a model, and configuring workspace settings. Keys are validated automatically.
+It walks you through provider selection, key validation, model choice, and workspace setup.
 
-### Option B: Environment Variables (Global)
+<details>
+<summary>Manual configuration via environment variables</summary>
 
-Set keys directly in your terminal session. Add these to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist across sessions:
+Set at least one LLM provider key and (optionally) a search key:
 
-```Shell
-export ANTHROPIC_API_KEY="your_anthropic_api_key_here"
-export TAVILY_API_KEY="your_tavily_api_key_here"
+```bash
+# Pick one LLM provider
+export ANTHROPIC_API_KEY="sk-..."   # Claude — console.anthropic.com
+export OPENAI_API_KEY="sk-..."      # GPT   — platform.openai.com
+export GOOGLE_API_KEY="AI..."       # Gemini — aistudio.google.com/api-keys
+export NVIDIA_API_KEY="nvapi-..."   # NIM   — build.nvidia.com
 
-# Optional: OpenAI, Google, or NVIDIA provider
-export OPENAI_API_KEY="your_openai_api_key_here"
-export GOOGLE_API_KEY="your_google_api_key_here"
-export NVIDIA_API_KEY="your_nvidia_api_key_here"
+# Web search (optional)
+export TAVILY_API_KEY="tvly-..."    # app.tavily.com
 ```
 
-### Option C: `.env` File (Project-level)
+Or use `EvoSci config set` to persist keys in `~/.config/evoscientist/config.yaml`.
 
-Create a `.env` file in the project root. This keeps keys scoped to the project and out of your shell history:
+Alternatively, copy the example `.env` file for project-level configuration:
 
-```Shell
-cp .env.example .env
-```
-
-Then edit `.env` and fill in your keys:
-
-```
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-TAVILY_API_KEY=your_tavily_api_key_here
+```bash
+cp .env.example .env  # then fill in your keys
 ```
 
 > [!WARNING]
-> Never commit `.env` files containing real API keys to version control. The `.env` file is already included in `.gitignore`.
+> Never commit `.env` files with real keys. It is already in `.gitignore`.
 
-| Key | Required | Description |
-|-----|----------|-------------|
-| `ANTHROPIC_API_KEY` | For Anthropic | Anthropic API key for Claude ([console.anthropic.com](https://console.anthropic.com/)) |
-| `GOOGLE_API_KEY` | For Google | Google API key for Gemini models ([aistudio.google.com](https://aistudio.google.com/api-keys)) |
-| `OPENAI_API_KEY` | For OpenAI | OpenAI API key for GPT models ([platform.openai.com](https://platform.openai.com/)) |
-| `NVIDIA_API_KEY` | For NVIDIA | NVIDIA API key for NIM models ([build.nvidia.com](https://build.nvidia.com/)) |
-| `TAVILY_API_KEY` | Yes | Tavily API key for web search ([app.tavily.com](https://app.tavily.com/)) |
+</details>
 
 ## ⚡ Quick Start
 
-### CLI Inference  
-You can perform inference directly from the command line using our CLI tool:
+```bash
+EvoSci  # or EvoScientist — interactive mode
+```
 
 ![demo](.github/assets/EvoScientist_cli.png)
 
-```Shell
-python -m EvoScientist 
-```
-or
-```Shell
-EvoSci # or EvoScientist
-```
-**Optional arguments:**
+> Run `EvoSci -h` for all CLI options.
 
+![cli help](.github/assets/EvoScientist_cli_help.png)
+
+<details>
+<summary>Common examples</summary>
+
+```bash
+EvoSci -p "your question"        # single-shot mode
+EvoSci -m run                     # isolated per-session workspace
+EvoSci --ui textual               # alternative TUI backend
+EvoSci serve                      # headless mode — channels only, no interactive prompt
 ```
---mode <mode>      Workspace mode: 'daemon' (persistent) or 'run' (isolated per-session)
--n, --name <name>  Name for the run directory (requires --mode run; duplicates get _1, _2, …)
---workdir <path>   Override workspace directory for this session
---use-cwd          Use current working directory as workspace
---thread-id <id>   Resume a conversation thread
---no-thinking      Disable thinking display
---ui <backend>     UI backend: rich (default) or textual (beta)
--p, --prompt <q>   Single-shot mode: execute query and exit
+
+</details>
+
+<details>
+<summary>In-session commands</summary>
+
+| Command | Description |
+| ------- | ----------- |
+| `/new` | Start a new session |
+| `/current` | Show thread ID and workspace path |
+| `/channel` | Start a messaging channel |
+| `/skills` | List installed skills |
+| `/install-skill <src>` | Install skill from path or GitHub |
+| `/mcp` | List MCP servers and tool routing |
+| `/exit` | Quit |
+
+</details>
+
+<details>
+<summary>Script Inference</summary>
+
+```python
+from EvoScientist import EvoScientist_agent
+from langchain_core.messages import HumanMessage
+from EvoScientist.utils import format_messages
+
+thread = {"configurable": {"thread_id": "1"}}
+last_len = 0
+
+for state in EvoScientist_agent.stream(
+    {"messages": [HumanMessage(content="Hi?")]},
+    config=thread,
+    stream_mode="values",
+):
+    msgs = state["messages"]
+    if len(msgs) > last_len:
+        format_messages(msgs[last_len:])
+        last_len = len(msgs)
+```
+
+</details>
+
+## 🔌 MCP Integration
+
+Add external tools via [MCP](https://modelcontextprotocol.io/) servers with a single command:
+
+```bash
+# Usage
+EvoSci mcp add <name> <command> [-- args...]
+
+# Example
+EvoSci mcp add sequential-thinking npx -- -y @modelcontextprotocol/server-sequential-thinking
 ```
 
 > [!NOTE]
-> In `--ui textual` mode, the built-in TUI commands are:
-> `/help`, `/current`, `/new`, `/clear`, `/threads`, `/resume <id>`, `/delete <id>`, `/exit`.
+> For command options, config fields, tool routing, wildcard filtering, and troubleshooting, see the **[MCP Integration Guide](./EvoScientist/mcp)**.
 
-![demo](.github/assets/EvoScientist_cli_help.png)
+## 📱 Channels
 
-**Configuration commands:**
-
-```Shell
-EvoSci onboard                # Interactive setup wizard
-EvoSci onboard --skip-validation  # Skip API key validation
-EvoSci config                 # List all configuration values
-EvoSci config get <key>       # Get a single value
-EvoSci config set <key> <val> # Set a single value
-EvoSci config reset --yes     # Reset to defaults
-EvoSci config path            # Show config file path
-```
-
-**Interactive Commands:**
-
-| Command | Description |
-|---------|-------------|
-| `/exit` | Quit the session |
-| `/new` | Start a new session (new workspace + thread) |
-| `/current` | Show current thread ID and workspace path |
-| `/channel` | Start iMessage channel (shares agent session) |
-| `/skills` | List installed user skills |
-| `/install-skill <source>` | Install a skill from local path or GitHub |
-| `/uninstall-skill <name>` | Uninstall a user-installed skill |
-| `/mcp` | List configured MCP servers and tool routing |
-
-**Skill Installation Examples:**
+Connect messaging platforms so they share the same agent session as the CLI:
 
 ```bash
-# Install from local path
-/install-skill ./my-skill
+# Usage
+EvoSci channel setup <channel>
 
-# Install from GitHub URL
-/install-skill https://github.com/owner/repo/tree/main/skill-name
-
-# Install from GitHub shorthand
-/install-skill owner/repo@skill-name
-```
-
-### Channels
-
-EvoScientist integrates with 10 messaging platforms, allowing you to control the agent remotely from any chat app. All channels share the same agent core — messages from any platform go through the same processing pipeline.
-
-| Channel | Transport | Public IP Required | Install Extra |
-|:--------|:----------|:------------------:|:--------------|
-| Telegram | Long Polling | No | `pip install evoscientist[telegram]` |
-| Discord | WebSocket | No | `pip install evoscientist[discord]` |
-| Slack | Socket Mode | No | `pip install evoscientist[slack]` |
-| Feishu / Lark | HTTP Webhook | Yes | `pip install evoscientist[feishu]` |
-| WeChat (WeCom / MP) | HTTP Webhook | Yes | `pip install evoscientist[wechat]` |
-| DingTalk | WebSocket Stream | No | `pip install evoscientist[dingtalk]` |
-| QQ | WebSocket | No | `pip install evoscientist[qq]` |
-| Signal | JSON-RPC | No | `pip install evoscientist[signal]` |
-| Email | IMAP + SMTP | No | `pip install evoscientist[email]` |
-| iMessage | JSON-RPC (stdio) | No | macOS only, requires [imsg](https://github.com/anthropics/imsg) CLI |
-
-**Quick start:**
-
-```bash
-# 1. Install channel dependencies
-pip install evoscientist[telegram]   # or discord, slack, feishu, etc.
-
-# 2. Configure via wizard or CLI
-EvoSci onboard                      # interactive setup
-# or
-EvoSci config set channel_enabled telegram
-EvoSci config set telegram_bot_token "123456:ABC-xxx"
-
-# 3. Start
-EvoSci serve                        # agent + all enabled channels
+# Example
+EvoSci channel setup telegram
 ```
 
 Multiple channels can run concurrently — comma-separate names in the config:
@@ -280,114 +249,18 @@ The channel can also be started interactively with `/channel` in the CLI session
 > [!NOTE]
 > For per-channel setup guides, capability matrix, architecture details, and troubleshooting, see the **[Channel Integration Guide](./EvoScientist/channels)**.
 
-### Runtime Directories
-
-By default, the **workspace root** is the current working directory. Sub-directories
-are created automatically:
-
-```
-<cwd>/
-  memory/   # shared MEMORY.md (persistent across sessions)
-  skills/   # user-installed skills
-  runs/     # per-session workspaces (run mode only)
-```
-
-Use `--workdir` to set a different workspace root, or configure it via
-`EvoSci config set default_workdir /path/to/workspace`.
-
-Override individual paths via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EVOSCIENTIST_WORKSPACE_DIR` | current directory | Root workspace directory |
-| `EVOSCIENTIST_RUNS_DIR` | `<workspace>/runs` | Per-session run directories |
-| `EVOSCIENTIST_MEMORY_DIR` | `<workspace>/memory` | Shared memory storage |
-| `EVOSCIENTIST_SKILLS_DIR` | `<workspace>/skills` | User-installed skills |
-
-### Script Inference
-```python
-from EvoScientist import EvoScientist_agent
-from langchain_core.messages import HumanMessage
-from EvoScientist.utils import format_messages
-
-thread = {"configurable": {"thread_id": "1"}}
-question = "Hi?"
-last_len = 0
-
-for state in EvoScientist_agent.stream(
-    {"messages": [HumanMessage(content=question)]},
-    config=thread,
-    stream_mode="values",
-):
-    msgs = state["messages"]
-    if len(msgs) > last_len:
-        format_messages(msgs[last_len:]) 
-        last_len = len(msgs)
-```
-
-<details>
-<summary> Output </summary>
-
-```json
-
-╭─────────────────────────────────────────────────── 🧑 Human ────────────────────────────────────────────────────╮
-│ Hi?                                                                                                             │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭───────────────────────────────────────────────────── 📝 AI ─────────────────────────────────────────────────────╮
-│ Hi! I'm here to help you with experimental research tasks. I can assist with:                                   │
-│                                                                                                                 │
-│ - **Planning experiments** - designing stages, success criteria, and workflows                                  │
-│ - **Running experiments** - implementing baselines, training models, analyzing results                          │
-│ - **Research** - finding papers, methods, datasets, and baselines                                               │
-│ - **Analysis** - computing metrics, creating visualizations, interpreting results                               │
-│ - **Writing** - drafting experimental reports and documentation                                                 │
-│                                                                                                                 │
-│ What would you like to work on today?                                                                           │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-</details>
-
-### Web Interface  
-
-> TODO
-
-
-## 🔌 MCP Integration
-
-EvoScientist connects to external systems via [MCP](https://modelcontextprotocol.io/) servers. Supports `stdio`, `http`, `streamable_http`, `sse`, and `websocket` transports.
-
-```bash
-# Add a server from the terminal
-EvoSci mcp add sequential-thinking npx -- -y @modelcontextprotocol/server-sequential-thinking
-
-# Or from inside an agent session
-/mcp add sequential-thinking npx -- -y @modelcontextprotocol/server-sequential-thinking
-```
-
-> [!NOTE]
-> For command options, config fields, tool routing, wildcard filtering, and troubleshooting, see the **[MCP Integration Guide](./EvoScientist/mcp)**.
-
-## 📊 Evaluation
-
-> TODO
-
-## 📝 Citation
-
-If you find our paper and code useful in your research and applications, please cite using this BibTeX:
-
-> TODO
-
 ## 📚 Acknowledgments
 
 This project builds upon the following outstanding open-source works:
 
-- [**Deep Agents**](https://github.com/langchain-ai/deepagents) — A framework for building AI agents that can interact with various tools and environments.
-- [**Deep Agents UI**](https://github.com/langchain-ai/deep-agents-ui) — A user interface for visualising and managing Deep Agents.
+- [**LangChain**](https://github.com/langchain-ai/langchain) — A framework for building agents and LLM-powered applications.
+- [**DeepAgents**](https://github.com/langchain-ai/deepagents) — The batteries-included agent harness.
 
 We thank the authors for their valuable contributions to the open-source community.
 
-## 📦 EvoScientist Team
+<p align="right"><a href="#top">🔝Back to top</a></p>
+
+## 🏛️ EvoScientist Team
 
 <table>
   <tbody>
@@ -407,7 +280,7 @@ We thank the authors for their valuable contributions to the open-source communi
                width="100" height="100"
                style="object-fit: cover; border-radius: 20%;" alt="Yougang Lyu"/>
           <br />
-          <sub><b>Yougang Lyu</b></sub>
+          <sub><b>Yougang Lyu<sup>§</sup></b></sub>
         </a>
       </td>
       <td align="center">
@@ -416,7 +289,7 @@ We thank the authors for their valuable contributions to the open-source communi
                width="100" height="100"
                style="object-fit: cover; border-radius: 20%;" alt="Dinos Papakostas"/>
           <br />
-          <sub><b>Dinos Papakostas</b></sub>
+          <sub><b>Dinos Papakostas<sup>‡</sup></b></sub>
         </a>
       </td>
       <td align="center">
@@ -425,17 +298,43 @@ We thank the authors for their valuable contributions to the open-source communi
                width="100" height="100"
                style="object-fit: cover; border-radius: 20%;" alt="Ziheng Zhang"/>
           <br />
-          <sub><b>Ziheng Zhang</b></sub>
+          <sub><b>Ziheng Zhang<sup>‡</sup></b></sub>
         </a>
       </td>
     </tr>
   </tbody>
 </table>
 
-<sup>†</sup> Project Leader
+> <sup>†</sup> Project Leader <sup>§</sup> Research Contributor <sup>‡</sup> Core Developer
 
 For any enquiries or collaboration opportunities, please contact: [**EvoScientist.ai@gmail.com**](mailto:evoscientist.ai@gmail.com)
 
+<p align="right"><a href="#top">🔝Back to top</a></p>
+
+## 🤝 Contributing
+
+<img alt="EvoScientist Logo" style="float: right;" src=".github/assets/EvoScientist_team.png" width="20%" />
+
+We welcome contributions from developers and researchers at all levels. Please refer to our [Contributing Guidelines](./CONTRIBUTING.md) to get started and help make EvoScientist more accessible.
+
+### ❤️ Thanks go to these awesome contributors:
+
+[![EvoScientist contributors](https://contrib.rocks/image?repo=EvoScientist/EvoScientist)](https://github.com/EvoScientist/EvoScientist/graphs/contributors)
+
+### 📈 Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=EvoScientist/EvoScientist&type=date&legend=top-left)](https://www.star-history.com/#EvoScientist/EvoScientist&type=date&legend=top-left)
+
+<p align="right"><a href="#top">🔝Back to top</a></p>
+
 ## 📜 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
+<p align="right"><a href="#top">🔝Back to top</a></p>
+
+---
+
+<p align="center">
+  Made with ❤️ by the EvoScientist team and the open source community for the AI scientist community.
+</p>
