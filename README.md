@@ -368,7 +368,7 @@ Jan Piotrowski, Wiktor Cupiał, Yuyue Zhao, Xinhao Yi, Jakub Kaliski, Jakub Fili
 
 > <sup>†</sup>Project Lead & Engineering Lead <sup>‡</sup>Core Developer <sup>§</sup>Project Correspondent
 
-> Xiaoyi DeepResearch Team and the wider open-source community contribute to this project.
+> *Xiaoyi DeepResearch Team* and the wider open-source community contribute to this project.
 
 For any enquiries or collaboration opportunities, please contact: [**EvoScientist.ai@gmail.com**](mailto:evoscientist.ai@gmail.com)
 
