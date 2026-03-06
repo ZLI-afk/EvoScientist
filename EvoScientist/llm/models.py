@@ -34,6 +34,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "anthropic"),
     ("claude-haiku-4-5", "claude-haiku-4-5-20251001", "anthropic"),
     # OpenAI
+    ("gpt-5.4", "gpt-5.4-2026-03-05", "openai"),
     ("gpt-5.3-codex", "gpt-5.3-codex", "openai"),
     ("gpt-5.2-codex", "gpt-5.2-codex", "openai"),
     ("gpt-5.2", "gpt-5.2-2025-12-11", "openai"),
