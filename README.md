@@ -358,21 +358,21 @@ We thank the authors for their valuable contributions to the open-source communi
         </a>
       </td>
       <td align="center">
-        <a href="https://muxincg2004.github.io/">
-          <img src="https://muxincg2004.github.io/resume_avatar.jpg"
-               width="100" height="100"
-               style="object-fit: cover; border-radius: 20%;" alt="Ziheng Zhang"/>
-          <br />
-          <sub><b>Ziheng Zhang</b><sup>‡</sup></sub>
-        </a>
-      </td>
-      <td align="center">
         <a href="https://din0s.me/">
           <img src="https://din0s.me/images/pk.jpg"
                width="100" height="100"
                style="object-fit: cover; border-radius: 20%;" alt="Dinos Papakostas"/>
           <br />
           <sub><b>Dinos Papakostas</b><sup>‡</sup></sub>
+        </a>
+      </td>
+      <td align="center">
+        <a href="https://muxincg2004.github.io/">
+          <img src="https://muxincg2004.github.io/resume_avatar.jpg"
+               width="100" height="100"
+               style="object-fit: cover; border-radius: 20%;" alt="Ziheng Zhang"/>
+          <br />
+          <sub><b>Ziheng Zhang</b><sup>‡</sup></sub>
         </a>
       </td>
       <td align="center">
