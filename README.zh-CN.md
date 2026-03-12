@@ -186,7 +186,7 @@ EvoSci onboard
 > [!TIP]
 > 向导将引导你完成供应商选择、密钥验证、模型选择和工作区模式设置。
 
-<img src=".github/assets/EvoScientist_onboard.png" alt="onboard" width="80%" />
+![onboard](.github/assets/EvoScientist_onboard.png)
 
 <details>
 <summary> 📟 通过环境变量手动配置</summary>
