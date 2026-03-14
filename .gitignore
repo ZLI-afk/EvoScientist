@@ -16,7 +16,6 @@ build/
 .env
 .venv/
 venv/
-uv.lock
 bridge/node_modules/
 bridge/package-lock.json
 
