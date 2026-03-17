@@ -5,29 +5,29 @@
 
 <div align="center">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset=".github/assets/logo-dark.svg">
-      <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-light.svg">
-      <img alt="EvoScientist Logo" src=".github/assets/logo-dark.svg" width="80%">
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-dark.svg">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-light.svg">
+      <img alt="EvoScientist Logo" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/logo-dark.svg" width="80%">
     </picture>
 </div>
 
 <div align="center">
 <a href="https://pypi.org/project/EvoScientist/"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-pypi-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-pypi-dark.svg">
-  <img alt="PyPI v0.0.2" src=".github/assets/badge-pypi-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-dark.svg">
+  <img alt="PyPI v0.0.2" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-pypi-light.svg" height="28">
 </picture></a><a href="https://EvoScientist.github.io/"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-website-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-website-dark.svg">
-  <img alt="Website" src=".github/assets/badge-website-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-dark.svg">
+  <img alt="Website" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-website-light.svg" height="28">
 </picture></a><a href="https://github.com/langchain-ai/deepagents"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-framework-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-framework-dark.svg">
-  <img alt="Framework DeepAgents" src=".github/assets/badge-framework-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-dark.svg">
+  <img alt="Framework DeepAgents" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-framework-light.svg" height="28">
 </picture></a><a href="https://github.com/EvoScientist/EvoScientist/blob/main/LICENSE"><picture>
-  <source media="(prefers-color-scheme: light)" srcset=".github/assets/badge-license-light.svg">
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/badge-license-dark.svg">
-  <img alt="License Apache 2.0" src=".github/assets/badge-license-light.svg" height="28">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-dark.svg">
+  <img alt="License Apache 2.0" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/badge-license-light.svg" height="28">
 </picture></a>
 </div>
 
@@ -54,17 +54,17 @@ EvoScientist 超越了传统的人在回路（Human-in-the-Loop）模式，采�
 <table>
   <tr>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/ICAIS_awards.JPG" height="180" alt="ICAIS 2025 Awards"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/ICAIS_awards.JPG" height="180" alt="ICAIS 2025 Awards"/>
       <br />
       <sub><b>Best Paper & Appraisal Award</b></sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/ICAIS_best_paper.png" height="180" alt="Best Paper"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/ICAIS_best_paper.png" height="180" alt="Best Paper"/>
       <br />
       <sub><b>AI-Generated Best Paper</b></sub>
     </td>
     <td align="center" valign="top" width="33%">
-      <img src=".github/assets/deepresearch_bench_2.JPG" height="180" alt="DeepResearch Bench II #1"/>
+      <img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/deepresearch_bench_2.JPG" height="180" alt="DeepResearch Bench II #1"/>
       <br />
       <sub><b>DeepResearch Bench II 第一名</b></sub>
     </td>
@@ -219,7 +219,7 @@ EvoSci onboard
 > 向导将引导你完成供应商选择、密钥验证、模型选择和工作区模式设置。
 > 支持 [Claude Code](https://claude.com/product/claude-code) 和 [Codex CLI](https://developers.openai.com/codex/cli/) 用户通过 OAuth 直连——无需 API Key。
 
-![onboard](.github/assets/EvoScientist_onboard.png)
+![onboard](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_onboard.png)
 
 <details>
 <summary> 📟 通过环境变量手动配置</summary>
@@ -257,11 +257,11 @@ cp .env.example .env  # 填入你的密钥
 EvoSci  # 或 EvoScientist — 交互模式（默认 TUI）
 ```
 
-![demo](.github/assets/EvoScientist_cli.png)
+![demo](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_cli.png)
 
 > 运行 `EvoSci -h` 查看全部 CLI 选项。
 
-![cli help](.github/assets/EvoScientist_cli_help.png)
+![cli help](https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_cli_help.png)
 
 <details>
 <summary>常用示例</summary>
@@ -502,7 +502,7 @@ channel_enabled: "telegram,slack,feishu,qq"
 
 Jan Piotrowski, Wiktor Cupiał, Jakub Kaliski, Jakub Filipiuk, Xinhao Yi, Shuyu Guo, Andreas Sauter, Wenxiang Hu, Jacopo Urbani, Zaiqiao Meng, Jun Luo, Lun Zhou
 
-> <a href="https://xiaoyi.huawei.com/chat/research"><img src=".github/assets/xiaoyi-deepresearch.webp" height="16" alt="Xiaoyi DeepResearch" align="center" /></a> [*Xiaoyi DeepResearch*](https://xiaoyi.huawei.com/chat/research) *Team* 及更广泛的开源社区共同为本项目做出贡献。
+> <a href="https://xiaoyi.huawei.com/chat/research"><img src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/xiaoyi-deepresearch.webp" height="16" alt="Xiaoyi DeepResearch" align="center" /></a> [*Xiaoyi DeepResearch*](https://xiaoyi.huawei.com/chat/research) *Team* 及更广泛的开源社区共同为本项目做出贡献。
 
 如有任何咨询或合作意向，请联系：[**EvoScientist.ai@gmail.com**](mailto:evoscientist.ai@gmail.com)
 
@@ -510,7 +510,7 @@ Jan Piotrowski, Wiktor Cupiał, Jakub Kaliski, Jakub Filipiuk, Xinhao Yi, Shuyu 
 
 ## 🤝 贡献
 
-<img align="right" alt="EvoScientist Team" src=".github/assets/EvoScientist_team.png" width="20%" />
+<img align="right" alt="EvoScientist Team" src="https://raw.githubusercontent.com/EvoScientist/EvoScientist/main/.github/assets/EvoScientist_team.png" width="20%" />
 
 我们欢迎各层次的开发者、研究者以及 AI 编程助手参与贡献。我们的 [贡献指南](./CONTRIBUTING.md) 同时面向人类和 AI Agent 编写，涵盖架构说明、设计模式、扩展指南和代码规范，帮助你安全高效地参与项目开发。
 
