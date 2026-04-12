@@ -73,6 +73,8 @@ class EvoScientistConfig:
     zhipu_api_key: str = ""
     volcengine_api_key: str = ""
     dashscope_api_key: str = ""
+    moonshot_api_key: str = ""
+    kimi_api_key: str = ""
     custom_openai_api_key: str = ""
     custom_openai_base_url: str = ""
     custom_openai_headers: str = ""  # JSON string, e.g. '{"User-Agent": "...", "X-Custom": "..."}'
@@ -85,7 +87,6 @@ class EvoScientistConfig:
     # LLM Settings
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-5"
-    reasoning_effort: str = ""  # OpenRouter reasoning effort: "xhigh"|"high"|"medium"|"low"|"minimal"|"none"|"" (default=high)
 
     # Workspace Settings
     default_mode: Literal["daemon", "run"] = "daemon"
@@ -94,10 +95,13 @@ class EvoScientistConfig:
     # UI Settings
     show_thinking: bool = True
     ui_backend: Literal["cli", "tui"] = "tui"
+    log_level: str = "warning"
+    reasoning_effort: str = "high"
 
     # Channel Settings
     channel_enabled: str = ""  # "imessage" | "telegram" | "discord" | "slack" | "wechat" | "dingtalk" | "feishu" | "email" | "qq" | "signal" | "" (comma-separated for multiple)
     channel_send_thinking: bool = True  # forward thinking to any channel
+    channel_debug_tracing: bool = False  # emit extra inbound diagnostics at DEBUG
     require_mention: str = "group"  # "always" | "group" | "off"
     text_chunk_limit: int = 0  # 0 = use capability default
     allowed_channels: str = ""  # comma-separated channel IDs, empty = allow all
@@ -368,6 +372,8 @@ _ENV_MAPPINGS = {
     "zhipu_api_key": "ZHIPU_API_KEY",
     "volcengine_api_key": "VOLCENGINE_API_KEY",
     "dashscope_api_key": "DASHSCOPE_API_KEY",
+    "moonshot_api_key": "MOONSHOT_API_KEY",
+    "kimi_api_key": "KIMI_API_KEY",
     "custom_openai_api_key": "CUSTOM_OPENAI_API_KEY",
     "custom_openai_base_url": "CUSTOM_OPENAI_BASE_URL",
     "custom_openai_headers": "CUSTOM_OPENAI_HEADERS",
@@ -379,6 +385,9 @@ _ENV_MAPPINGS = {
     "default_mode": "EVOSCIENTIST_DEFAULT_MODE",
     "default_workdir": "EVOSCIENTIST_WORKSPACE_DIR",
     "ui_backend": "EVOSCIENTIST_UI_BACKEND",
+    "log_level": "EVOSCIENTIST_LOG_LEVEL",
+    "reasoning_effort": "EVOSCIENTIST_REASONING_EFFORT",
+    "channel_debug_tracing": "EVOSCIENTIST_CHANNEL_DEBUG_TRACING",
     "ccproxy_port": "EVOSCIENTIST_CCPROXY_PORT",
     "use_responses_api": "EVOSCIENTIST_USE_RESPONSES_API",
 }
@@ -461,6 +470,10 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         os.environ["VOLCENGINE_API_KEY"] = config.volcengine_api_key
     if config.dashscope_api_key and not os.environ.get("DASHSCOPE_API_KEY"):
         os.environ["DASHSCOPE_API_KEY"] = config.dashscope_api_key
+    if config.moonshot_api_key and not os.environ.get("MOONSHOT_API_KEY"):
+        os.environ["MOONSHOT_API_KEY"] = config.moonshot_api_key
+    if config.kimi_api_key and not os.environ.get("KIMI_API_KEY"):
+        os.environ["KIMI_API_KEY"] = config.kimi_api_key
     if config.custom_openai_api_key and not os.environ.get("CUSTOM_OPENAI_API_KEY"):
         os.environ["CUSTOM_OPENAI_API_KEY"] = config.custom_openai_api_key
     if config.custom_openai_base_url and not os.environ.get("CUSTOM_OPENAI_BASE_URL"):
@@ -483,9 +496,9 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         os.environ["OLLAMA_BASE_URL"] = config.ollama_base_url
     if config.tavily_api_key and not os.environ.get("TAVILY_API_KEY"):
         os.environ["TAVILY_API_KEY"] = config.tavily_api_key
+    if config.reasoning_effort and not os.environ.get("EVOSCIENTIST_REASONING_EFFORT"):
+        os.environ["EVOSCIENTIST_REASONING_EFFORT"] = config.reasoning_effort
     if config.use_responses_api and not os.environ.get(
         "EVOSCIENTIST_USE_RESPONSES_API"
     ):
         os.environ["EVOSCIENTIST_USE_RESPONSES_API"] = config.use_responses_api
-    if config.reasoning_effort and not os.environ.get("EVOSCIENTIST_REASONING_EFFORT"):
-        os.environ["EVOSCIENTIST_REASONING_EFFORT"] = config.reasoning_effort

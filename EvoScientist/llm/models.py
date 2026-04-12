@@ -16,6 +16,7 @@ from langchain.chat_models import init_chat_model
 
 from .patches import (
     _is_ccproxy_codex,
+    _patch_ccproxy_system_to_developer,
     _patch_openai_compat_content,
     _patch_openrouter_reasoning_details,
 )
@@ -29,11 +30,14 @@ _VOLCENGINE_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 _DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 _DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+_MOONSHOT_BASE_URL = "https://api.moonshot.cn/v1"
+_KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/"
 
 # Providers routed through the OpenAI provider with a custom base_url.
 # Maps provider name → (base_url or None, env var for API key).
 _OPENAI_ROUTED_PROVIDERS: dict[str, tuple[str | None, str]] = {
     "deepseek": (_DEEPSEEK_BASE_URL, "DEEPSEEK_API_KEY"),
+    "moonshot": (_MOONSHOT_BASE_URL, "MOONSHOT_API_KEY"),
     "siliconflow": (_SILICONFLOW_BASE_URL, "SILICONFLOW_API_KEY"),
     "zhipu": (_ZHIPU_BASE_URL, "ZHIPU_API_KEY"),
     "zhipu-code": (_ZHIPU_CODE_BASE_URL, "ZHIPU_API_KEY"),
@@ -49,6 +53,7 @@ _OPENAI_ROUTED_PROVIDERS: dict[str, tuple[str | None, str]] = {
 # Maps provider name → (base_url or None, env var for API key).
 _ANTHROPIC_ROUTED_PROVIDERS: dict[str, tuple[str | None, str]] = {
     "minimax": (_MINIMAX_ANTHROPIC_BASE_URL, "MINIMAX_API_KEY"),
+    "kimi-coding": (_KIMI_CODING_BASE_URL, "KIMI_API_KEY"),
     "custom-anthropic": (None, "CUSTOM_ANTHROPIC_API_KEY"),
 }
 
@@ -160,6 +165,16 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     # DeepSeek
     ("deepseek-r1", "deepseek-reasoner", "deepseek"),
     ("deepseek-v3", "deepseek-chat", "deepseek"),
+    # Moonshot (OpenAI-compatible)
+    ("kimi-k2.5", "kimi-k2.5", "moonshot"),
+    ("kimi-k2-thinking", "kimi-k2-thinking", "moonshot"),
+    ("kimi-k2-thinking-turbo", "kimi-k2-thinking-turbo", "moonshot"),
+    ("moonshot-v1-auto", "moonshot-v1-auto", "moonshot"),
+    ("moonshot-v1-128k", "moonshot-v1-128k", "moonshot"),
+    ("moonshot-v1-32k", "moonshot-v1-32k", "moonshot"),
+    ("moonshot-v1-8k", "moonshot-v1-8k", "moonshot"),
+    # Kimi Coding Plan (Anthropic-compatible)
+    ("kimi-for-coding", "kimi-for-coding", "kimi-coding"),
 ]
 
 # Public dict for simple lookups (last entry wins for duplicate names).
@@ -307,20 +322,24 @@ def get_chat_model(
             kwargs["base_url"] = base_url
             _is_openai_proxy = _is_ccproxy_codex()
             if _is_openai_proxy:
-                # Default to Chat Completions for ccproxy: its Chat
-                # Completions → Responses API converter handles system messages
-                # correctly; its native Responses API endpoint does not.
-                # (User can override via EVOSCIENTIST_USE_RESPONSES_API=true.)
-                kwargs.setdefault("use_responses_api", False)
-                # Default streaming off: ccproxy duplicates tool call names
-                # in streaming Chat Completions chunks.
-                kwargs.setdefault("streaming", False)
+                # Use Responses API for ccproxy: bypasses the format chain
+                # converter (Chat→Responses→Chat) which returns 502 on
+                # complex responses.  System messages are converted to
+                # developer role by _patch_ccproxy_system_to_developer().
+                kwargs.setdefault("use_responses_api", True)
+                # Streaming must stay ON for Responses API: ccproxy's
+                # StreamingBufferService loses output when assembling
+                # non-streaming responses.  (The old streaming=False was
+                # for Chat Completions tool_call duplication — not an issue
+                # with the Responses API SSE format.)
+                kwargs.pop("streaming", None)  # remove if set elsewhere
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if api_key:
             kwargs["api_key"] = api_key
 
     # OpenAI-routed providers → route through OpenAI provider with base_url
     elif provider in _OPENAI_ROUTED_PROVIDERS:
+        _original_provider = provider
         base_url_default, api_key_env = _OPENAI_ROUTED_PROVIDERS[provider]
         if provider == "custom-openai":
             base_url = os.environ.get("CUSTOM_OPENAI_BASE_URL", "")
@@ -350,6 +369,11 @@ def get_chat_model(
         # from history, causing error 20015 on multi-turn requests.
         if provider == "siliconflow":
             kwargs.setdefault("extra_body", {})["enable_thinking"] = False
+        # Moonshot: disable thinking for all models to prevent LangChain from dropping
+        # reasoning_content, which causes multi-turn conversation errors (error 20015).
+        # Even native thinking models like kimi-k2-thinking operate in non-thinking mode.
+        if provider == "moonshot":
+            kwargs.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
         provider = "openai"
 
     # OpenRouter → native ChatOpenRouter via init_chat_model.
@@ -365,6 +389,7 @@ def get_chat_model(
 
     # Anthropic-routed providers → route through Anthropic provider with base_url
     elif provider in _ANTHROPIC_ROUTED_PROVIDERS:
+        _original_provider = provider
         base_url_default, api_key_env = _ANTHROPIC_ROUTED_PROVIDERS[provider]
         if provider == "custom-anthropic":
             base_url = os.environ.get("CUSTOM_ANTHROPIC_BASE_URL", "")
@@ -387,7 +412,9 @@ def get_chat_model(
         api_key = os.environ.get(api_key_env, "")
         if api_key:
             kwargs["api_key"] = api_key
-        _original_provider = provider
+        # Kimi Coding Plan requires claude-code User-Agent header
+        if provider == "kimi-coding":
+            kwargs.setdefault("default_headers", {})["User-Agent"] = "claude-code/0.1.0"
         provider = "anthropic"
 
     elif provider == "ollama":
@@ -412,11 +439,18 @@ def get_chat_model(
 
     chat_model = init_chat_model(model=model_id, model_provider=provider, **kwargs)
 
-    # Flatten list content to strings for OpenAI-compatible providers
+    # Flatten list content to strings for strict OpenAI-compatible providers
     # (DeepSeek, SiliconFlow, OpenRouter, custom-openai, etc.) and
     # native OpenAI through a proxy, to avoid "sequence expected string" errors.
-    if _is_third_party or _is_openai_proxy:
+    # Moonshot and Kimi Coding support standard format, no patch needed.
+    _no_patch_providers = {"moonshot", "kimi-coding"}
+    if (
+        _is_third_party or _is_openai_proxy
+    ) and _original_provider not in _no_patch_providers:
         _patch_openai_compat_content(chat_model)
+
+    if _is_openai_proxy:
+        _patch_ccproxy_system_to_developer(chat_model)
 
     return chat_model
 
