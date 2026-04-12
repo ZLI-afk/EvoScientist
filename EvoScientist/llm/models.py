@@ -331,6 +331,14 @@ def get_chat_model(
                     "OpenAI-compatible API endpoint URL (e.g. https://api.openai.com/v1)."
                 )
             base_url = base_url.rstrip("/")
+            _headers_json = os.environ.get("CUSTOM_OPENAI_HEADERS", "")
+            if _headers_json:
+                import json as _json
+                import httpx as _httpx
+                _custom_headers = _json.loads(_headers_json)
+                kwargs["default_headers"] = _custom_headers
+                kwargs["http_client"] = _httpx.Client(headers=_custom_headers)
+                kwargs["http_async_client"] = _httpx.AsyncClient(headers=_custom_headers)
         else:
             base_url = base_url_default
         if base_url:
@@ -367,6 +375,11 @@ def get_chat_model(
                     "Anthropic-compatible API endpoint URL (e.g. https://api.anthropic.com)."
                 )
             base_url = base_url.rstrip("/")
+            _headers_json = os.environ.get("CUSTOM_ANTHROPIC_HEADERS", "")
+            if _headers_json:
+                import json as _json
+                _custom_headers = _json.loads(_headers_json)
+                kwargs["default_headers"] = _custom_headers
         else:
             base_url = base_url_default
         if base_url:

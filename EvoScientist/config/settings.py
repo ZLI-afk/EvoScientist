@@ -75,8 +75,10 @@ class EvoScientistConfig:
     dashscope_api_key: str = ""
     custom_openai_api_key: str = ""
     custom_openai_base_url: str = ""
+    custom_openai_headers: str = ""  # JSON string, e.g. '{"User-Agent": "...", "X-Custom": "..."}'
     custom_anthropic_api_key: str = ""
     custom_anthropic_base_url: str = ""
+    custom_anthropic_headers: str = ""  # JSON string, e.g. '{"User-Agent": "...", "X-Custom": "..."}'
     ollama_base_url: str = ""
     tavily_api_key: str = ""
 
@@ -368,8 +370,10 @@ _ENV_MAPPINGS = {
     "dashscope_api_key": "DASHSCOPE_API_KEY",
     "custom_openai_api_key": "CUSTOM_OPENAI_API_KEY",
     "custom_openai_base_url": "CUSTOM_OPENAI_BASE_URL",
+    "custom_openai_headers": "CUSTOM_OPENAI_HEADERS",
     "custom_anthropic_api_key": "CUSTOM_ANTHROPIC_API_KEY",
     "custom_anthropic_base_url": "CUSTOM_ANTHROPIC_BASE_URL",
+    "custom_anthropic_headers": "CUSTOM_ANTHROPIC_HEADERS",
     "ollama_base_url": "OLLAMA_BASE_URL",
     "tavily_api_key": "TAVILY_API_KEY",
     "default_mode": "EVOSCIENTIST_DEFAULT_MODE",
@@ -461,6 +465,8 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         os.environ["CUSTOM_OPENAI_API_KEY"] = config.custom_openai_api_key
     if config.custom_openai_base_url and not os.environ.get("CUSTOM_OPENAI_BASE_URL"):
         os.environ["CUSTOM_OPENAI_BASE_URL"] = config.custom_openai_base_url
+    if config.custom_openai_headers and not os.environ.get("CUSTOM_OPENAI_HEADERS"):
+        os.environ["CUSTOM_OPENAI_HEADERS"] = config.custom_openai_headers
     if config.custom_anthropic_api_key and not os.environ.get(
         "CUSTOM_ANTHROPIC_API_KEY"
     ):
@@ -469,6 +475,10 @@ def apply_config_to_env(config: EvoScientistConfig) -> None:
         "CUSTOM_ANTHROPIC_BASE_URL"
     ):
         os.environ["CUSTOM_ANTHROPIC_BASE_URL"] = config.custom_anthropic_base_url
+    if config.custom_anthropic_headers and not os.environ.get(
+        "CUSTOM_ANTHROPIC_HEADERS"
+    ):
+        os.environ["CUSTOM_ANTHROPIC_HEADERS"] = config.custom_anthropic_headers
     if config.ollama_base_url and not os.environ.get("OLLAMA_BASE_URL"):
         os.environ["OLLAMA_BASE_URL"] = config.ollama_base_url
     if config.tavily_api_key and not os.environ.get("TAVILY_API_KEY"):
