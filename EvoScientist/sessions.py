@@ -112,22 +112,60 @@ async def _load_checkpoint_messages(
 
     Returns a list of LangChain message objects, or an empty list on failure.
     """
+    channel_values = await _load_checkpoint_channel_values(conn, thread_id, serde)
+    messages = channel_values.get("messages", [])
+    if not isinstance(messages, list):
+        return []
+    event = channel_values.get("_summarization_event")
+    return _apply_summarization_event(
+        messages, event if isinstance(event, dict) else None
+    )
+
+
+async def _load_checkpoint_channel_values(
+    conn: aiosqlite.Connection,
+    thread_id: str,
+    serde: JsonPlusSerializer,
+) -> dict:
+    """Load channel_values from the most recent checkpoint for *thread_id*."""
     query = """
         SELECT type, checkpoint
         FROM checkpoints
         WHERE thread_id = ?
+          AND json_extract(metadata, '$.agent_name') = ?
         ORDER BY checkpoint_id DESC
         LIMIT 1
     """
-    async with conn.execute(query, (thread_id,)) as cur:
+    async with conn.execute(query, (thread_id, AGENT_NAME)) as cur:
         row = await cur.fetchone()
         if not row or not row[0] or not row[1]:
-            return []
+            return {}
         try:
             data = serde.loads_typed((row[0], row[1]))
-            return data.get("channel_values", {}).get("messages", [])
+            channel_values = data.get("channel_values", {})
+            return channel_values if isinstance(channel_values, dict) else {}
         except (ValueError, TypeError, KeyError):
-            return []
+            return {}
+
+
+def _apply_summarization_event(messages: list, event: dict | None) -> list:
+    """Return the effective message list after applying a summarization event."""
+    if not event:
+        return list(messages)
+
+    try:
+        summary_message = event["summary_message"]
+        cutoff_index = int(event["cutoff_index"])
+    except (KeyError, TypeError, ValueError):
+        return list(messages)
+
+    if summary_message is None:
+        return list(messages)
+
+    if cutoff_index < 0 or cutoff_index > len(messages):
+        return list(messages)
+
+    return [summary_message, *messages[cutoff_index:]]
 
 
 async def _count_messages(
@@ -375,4 +413,7 @@ async def get_thread_messages(thread_id: str) -> list:
             if not await cur.fetchone():
                 return []
         serde = JsonPlusSerializer()
-        return await _load_checkpoint_messages(conn, thread_id, serde)
+        channel_values = await _load_checkpoint_channel_values(conn, thread_id, serde)
+        messages = channel_values.get("messages", [])
+        event = channel_values.get("_summarization_event")
+        return _apply_summarization_event(messages, event)

@@ -80,6 +80,7 @@ class StreamState:
     def __init__(self):
         self.thinking_text = ""
         self.summarization_text = ""
+        self.is_summarizing = False
         self.response_text = ""
         self.tool_calls = []
         self.tool_results = []
@@ -96,6 +97,8 @@ class StreamState:
         # Token usage tracking
         self.total_input_tokens = 0
         self.total_output_tokens = 0
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
         # Tool selection tracking (LLMToolSelectorMiddleware)
         self.selected_tools: list[str] = []
         # HITL interrupt tracking
@@ -174,6 +177,7 @@ class StreamState:
             self.thinking_text += event.get("content", "")
 
         elif event_type == "text":
+            self.is_summarizing = False
             self.is_thinking = False
             self.is_responding = True
             self.is_processing = False
@@ -275,19 +279,37 @@ class StreamState:
         elif event_type == "tool_selection":
             self.selected_tools = event.get("tools", [])
 
+        elif event_type == "summarization_start":
+            self.is_summarizing = True
+
         elif event_type == "summarization":
+            self.is_summarizing = True
             self.summarization_text += event.get("content", "")
 
         elif event_type == "usage_stats":
-            self.total_input_tokens += event.get("input_tokens", 0)
-            self.total_output_tokens += event.get("output_tokens", 0)
+            try:
+                input_tokens = max(0, int(event.get("input_tokens") or 0))
+            except (TypeError, ValueError):
+                input_tokens = 0
+            try:
+                output_tokens = max(0, int(event.get("output_tokens") or 0))
+            except (TypeError, ValueError):
+                output_tokens = 0
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
+            if input_tokens > 0:
+                self.last_input_tokens = input_tokens
+            if output_tokens > 0:
+                self.last_output_tokens = output_tokens
 
         elif event_type == "done":
+            self.is_summarizing = False
             self.is_processing = False
             if not self.response_text:
                 self.response_text = event.get("response", "")
 
         elif event_type == "error":
+            self.is_summarizing = False
             self.is_processing = False
             self.is_thinking = False
             self.is_responding = False
@@ -301,6 +323,7 @@ class StreamState:
         return {
             "thinking_text": self.thinking_text,
             "summarization_text": self.summarization_text,
+            "is_summarizing": self.is_summarizing,
             "response_text": self.response_text,
             "latest_text": self.latest_text,
             "tool_calls": self.tool_calls,
