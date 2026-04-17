@@ -4,12 +4,12 @@
 
 | Example                                                     | Description                                                                     |
 |------------------------------------------------------------|---------------------------------------------------------------------------------|
-| [Survey literature](https://github.com/EvoScientist/EvoScientist/tree/main/docs/examples/survey-literature)   | Run EvoScientist with the `paper-navigator` skill to produce a bilingual, conference-grade literature survey |
+| [Survey literature](https://github.com/EvoScientist/EvoScientist/tree/main/docs/examples/survey-literature#literature-survey)   | Run EvoScientist with the `paper-navigator` skill to produce a bilingual, conference-grade literature survey |
 
 
 | Recipe                                                     | Description                                                                     |
 |------------------------------------------------------------|---------------------------------------------------------------------------------|
-| [macOS 24/7 Deployment](recipes/deployment-macos-24h.md)   | Run EvoScientist as an always-on service on macOS with OAuth + Telegram + STT   |
+| [macOS 24/7 Deployment](https://github.com/EvoScientist/EvoScientist/blob/main/docs/recipes/deployment-macos-24h.md#running-evoscientist-247-on-macos-telegram-bot--stt--ccproxy)   | Run EvoScientist as an always-on service on macOS with OAuth + Telegram + STT   |
 
 ## Contributing a Recipe
 

@@ -402,7 +402,7 @@ for state in EvoScientist_agent.stream(
 
 A curated collection of official examples, advanced usage patterns, and community-contributed recipes to help you get the most out of EvoScientist.
 
-👉 **[Browse all examples & recipes](docs/README.md)**
+👉 **[Browse all examples & recipes](https://github.com/EvoScientist/EvoScientist/tree/main/docs#-examples--recipes)**
 
 <p align="right"><a href="#top">🔝Back to top</a></p>
 
