@@ -35,6 +35,12 @@ class CommandUI(Protocol):
     async def wait_for_mcp_browse(
         self, servers: list, installed_names: set[str], pre_filter_tag: str
     ) -> list | None: ...
+    async def wait_for_model_pick(
+        self,
+        entries: list[tuple[str, str, str]],
+        current_model: str | None,
+        current_provider: str | None,
+    ) -> tuple[str, str] | None: ...
     def clear_chat(self) -> None: ...
     def request_quit(self) -> None: ...
     def force_quit(self) -> None: ...
@@ -67,6 +73,20 @@ class Command(ABC):
     alias: ClassVar[list[str]] = []
     description: str
     arguments: ClassVar[list[Argument]] = []
+    # When False, callers may dispatch this command without waiting for
+    # the background agent load to finish — important so recovery
+    # commands like ``/mcp add`` can run even when the MCP load is
+    # failing and ``_await_agent_ready`` would hang.
+    requires_agent: ClassVar[bool] = False
+
+    def needs_agent(self, args: list[str]) -> bool:
+        """Whether this specific invocation needs the agent.
+
+        Default returns :attr:`requires_agent`.  Override when a command
+        has a mix of agent-using and agent-free subcommands (e.g.
+        ``/channel start`` vs ``/channel status``).
+        """
+        return self.requires_agent
 
     @abstractmethod
     async def execute(self, ctx: CommandContext, args: list[str]) -> None:

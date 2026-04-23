@@ -86,6 +86,21 @@ def _ensure_chat_model():
     return _chat_model
 
 
+def set_chat_model(model: str, provider: str | None = None):
+    """Replace the cached chat model with a new one.
+
+    Called by ``/model`` to switch the LLM mid-session.
+    Returns the new chat model instance.
+    """
+    global _chat_model, _EvoScientist_agent
+    from .llm import get_chat_model
+
+    _chat_model = get_chat_model(model=model, provider=provider)
+    # Invalidate the cached default agent so it gets rebuilt with the new model.
+    _EvoScientist_agent = None
+    return _chat_model
+
+
 # =============================================================================
 # MCP caching
 # =============================================================================
@@ -105,8 +120,14 @@ def _load_mcp_config_once() -> tuple[str, dict]:
     return sig, cfg
 
 
-def _load_mcp_tools_cached() -> dict[str, list]:
-    """Load MCP tools with config-aware caching."""
+def _load_mcp_tools_cached(on_progress=None) -> dict[str, list]:
+    """Load MCP tools with config-aware caching.
+
+    Args:
+        on_progress: Optional per-server progress callback forwarded to
+            :func:`EvoScientist.mcp.load_mcp_tools`.  Only invoked on a
+            cache miss — cached replays don't re-emit progress events.
+    """
     global _MCP_TOOLS_CACHE_KEY, _MCP_TOOLS_CACHE_VALUE
 
     from .mcp import load_mcp_tools
@@ -120,7 +141,7 @@ def _load_mcp_tools_cached() -> dict[str, list]:
     if _MCP_TOOLS_CACHE_KEY == cfg_key and _MCP_TOOLS_CACHE_VALUE is not None:
         return {k: list(v) for k, v in _MCP_TOOLS_CACHE_VALUE.items()}
 
-    loaded = load_mcp_tools(config=cfg)
+    loaded = load_mcp_tools(config=cfg, on_progress=on_progress)
     _MCP_TOOLS_CACHE_KEY = cfg_key
     _MCP_TOOLS_CACHE_VALUE = {k: list(v) for k, v in loaded.items()}
     return {k: list(v) for k, v in loaded.items()}
@@ -193,16 +214,20 @@ def _build_base_kwargs(base_backend, base_middleware):
     }
 
 
-def load_mcp_and_build_kwargs(base_backend, base_middleware):
+def load_mcp_and_build_kwargs(base_backend, base_middleware, *, on_mcp_progress=None):
     """Load MCP tools (cached by config) and build agent kwargs.
 
     Re-connects to MCP servers only when the effective MCP config changes.
     Falls back to base kwargs if no MCP configured.
+
+    Args:
+        on_mcp_progress: Optional per-server progress callback.  Forwarded
+            to the MCP loader so UIs can render live status.
     """
     from .tools import skill_manager, tavily_search, think_tool
     from .utils import load_subagents
 
-    mcp_by_agent = _load_mcp_tools_cached()
+    mcp_by_agent = _load_mcp_tools_cached(on_progress=on_mcp_progress)
     if not mcp_by_agent:
         return _build_base_kwargs(base_backend, base_middleware)
 
@@ -253,11 +278,11 @@ def _get_default_backend():
     """Build the default composite backend from current paths."""
     from deepagents.backends import CompositeBackend, FilesystemBackend
 
-    from .backends import CustomSandboxBackend, MergedReadOnlyBackend
+    from .backends import CustomSandboxBackend, MergedSkillsBackend
 
     workspace_dir = str(_paths_mod.WORKSPACE_ROOT)
     set_active_workspace(workspace_dir)
-    memory_dir = str(_paths_mod.MEMORY_DIR)
+    memory_dir = str(_paths_mod.MEMORIES_DIR)
     user_skills_dir = str(_paths_mod.USER_SKILLS_DIR)
     global_skills_dir = str(_paths_mod.GLOBAL_SKILLS_DIR)
 
@@ -266,7 +291,7 @@ def _get_default_backend():
         virtual_mode=True,
         timeout=300,
     )
-    sk_backend = MergedReadOnlyBackend(
+    sk_backend = MergedSkillsBackend(
         primary_dir=user_skills_dir,
         global_dir=global_skills_dir,
         secondary_dir=SKILLS_DIR,
@@ -279,7 +304,7 @@ def _get_default_backend():
         default=ws_backend,
         routes={
             "/skills/": sk_backend,
-            "/memory/": mem_backend,
+            "/memories/": mem_backend,
         },
     )
 
@@ -296,7 +321,7 @@ def _get_default_middleware():
 
     cfg = _ensure_config()
     model = _ensure_chat_model()
-    memory_dir = str(_paths_mod.MEMORY_DIR)
+    memory_dir = str(_paths_mod.MEMORIES_DIR)
     mw = [
         create_context_editing_middleware(model),
         ContextOverflowMapperMiddleware(),
@@ -345,7 +370,13 @@ def __getattr__(name: str):
 # =============================================================================
 
 
-def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config=None):
+def create_cli_agent(
+    workspace_dir: str | None = None,
+    checkpointer=None,
+    config=None,
+    *,
+    on_mcp_progress=None,
+):
     """Create agent with checkpointer for CLI multi-turn support.
 
     A fresh backend is constructed on every call using the current
@@ -367,7 +398,7 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
     from deepagents.backends import CompositeBackend, FilesystemBackend
 
     from . import paths as _paths
-    from .backends import CustomSandboxBackend, MergedReadOnlyBackend
+    from .backends import CustomSandboxBackend, MergedSkillsBackend
     from .middleware import (
         ContextOverflowMapperMiddleware,
         ToolErrorHandlerMiddleware,
@@ -395,7 +426,7 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
         workspace_dir = str(_paths.WORKSPACE_ROOT)
 
     # Read paths dynamically so runtime set_workspace_root() changes are picked up
-    _mem_dir = str(_paths.MEMORY_DIR)
+    _mem_dir = str(_paths.MEMORIES_DIR)
     _usr_skills_dir = str(_paths.USER_SKILLS_DIR)
     _global_skills_dir = str(_paths.GLOBAL_SKILLS_DIR)
 
@@ -407,12 +438,11 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
         virtual_mode=True,
         timeout=300,
     )
-    sk_backend = MergedReadOnlyBackend(
+    sk_backend = MergedSkillsBackend(
         primary_dir=_usr_skills_dir,
         global_dir=_global_skills_dir,
         secondary_dir=SKILLS_DIR,
     )
-    # Memory always uses SHARED directory (not per-session) for cross-session persistence
     mem_backend = FilesystemBackend(
         root_dir=_mem_dir,
         virtual_mode=True,
@@ -421,7 +451,7 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
         default=ws_backend,
         routes={
             "/skills/": sk_backend,
-            "/memory/": mem_backend,
+            "/memories/": mem_backend,
         },
     )
 
@@ -439,7 +469,7 @@ def create_cli_agent(workspace_dir: str | None = None, checkpointer=None, config
         mw.insert(0, AskUserMiddleware())
 
     # Re-load MCP tools from current config (picks up /mcp add changes)
-    kwargs = load_mcp_and_build_kwargs(be, mw)
+    kwargs = load_mcp_and_build_kwargs(be, mw, on_mcp_progress=on_mcp_progress)
 
     # HITL: gate shell execution for user approval
     _interrupt_on: dict[str, bool] | None = None

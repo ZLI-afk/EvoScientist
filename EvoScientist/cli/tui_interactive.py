@@ -19,20 +19,22 @@ from rich.console import Group
 from rich.text import Text
 
 import EvoScientist.cli.channel as _ch_mod
+from EvoScientist.cli.widgets.thread_selector import ThreadPickerWidget
 
 from ..commands import CommandContext
 from ..commands import manager as cmd_manager
-from ..config.settings import get_config_dir
+from ..paths import DATA_DIR
 from ..sessions import (
-    find_similar_threads,
     generate_thread_id,
     get_checkpointer,
     get_thread_messages,
     get_thread_metadata,
+    resolve_thread_id_prefix,
     thread_exists,
 )
 from ..stream.events import stream_agent_events
 from ..stream.state import _INTERNAL_TOOLS, StreamState
+from ._agent_loader import BackgroundAgentLoader, MCPProgressTracker
 from ._constants import LOGO_GRADIENT, LOGO_LINES, WELCOME_SLOGANS, build_metadata
 from .channel import (
     ChannelMessage,
@@ -220,6 +222,7 @@ def run_textual_interactive(
             AssistantMessage,
             CompactingWidget,
             LoadingWidget,
+            MCPLoaderWidget,
             SubAgentWidget,
             SummarizationWidget,
             SystemMessage,
@@ -322,7 +325,6 @@ def run_textual_interactive(
         def __init__(
             self,
             *,
-            agent: Any,
             thread_id_value: str,
             workspace: str | None,
             checkpointer: Any,
@@ -331,7 +333,14 @@ def run_textual_interactive(
             resume_warning: str = "",
         ) -> None:
             super().__init__()
-            self._agent = agent
+            self._progress_tracker = MCPProgressTracker()
+            self._agent_loader = BackgroundAgentLoader(
+                load_agent,
+                on_progress=self._on_mcp_progress,
+                on_success=self._on_agent_load_success,
+                on_failure=self._on_agent_load_failure,
+            )
+            self._mcp_loader_widget: Any = None
             self._conversation_tid = thread_id_value
             self._workspace_dir = workspace
             self._checkpointer = checkpointer
@@ -353,17 +362,102 @@ def run_textual_interactive(
             self._picker_future: asyncio.Future | None = None
             self._browser_future: asyncio.Future | None = None
             self._mcp_browser_future: asyncio.Future | None = None
-            self._history_suggester = HistorySuggester(get_config_dir() / "history")
+            self._model_picker_future: asyncio.Future | None = None
+            self._history_suggester = HistorySuggester(DATA_DIR / "history")
             self._history_index: int = -1  # -1 = not browsing history
             self._history_saved_input: str = ""  # saved current input before browsing
             self._background_tasks: set[asyncio.Task] = set()
             self._quit_pending: bool = False
+            self._current_model: str | None = model
+            self._current_provider: str | None = provider
             self._status_started_at = datetime.now()
-            self._status_base_snapshot = make_empty_status_snapshot(model)
+            self._status_base_snapshot = make_empty_status_snapshot(self._current_model)
             self._status_snapshot = self._status_base_snapshot
             self._status_streaming_text = ""
             self._status_last_input_tokens: int | None = None
             self._compacting_widget: CompactingWidget | None = None
+
+        # ── Background agent / MCP loading ───────────────────
+
+        def _on_mcp_progress(self, event: str, server: str, detail: str) -> None:
+            """Bridge worker-thread progress events to the Textual loop."""
+            if event not in {"start", "success", "error"}:
+                return
+            try:
+                self.call_from_thread(self._apply_mcp_progress, event, server, detail)
+            except Exception:
+                pass
+
+        def _apply_mcp_progress(self, event: str, server: str, detail: str) -> None:
+            """Update tracker + widget on the Textual thread."""
+            state = self._progress_tracker.record(event, server, detail)
+            if state is None:
+                return
+            widget = self._mcp_loader_widget
+            if widget is None or widget.dismissed:
+                self._mcp_loader_widget = None
+                return
+            widget.update_server(server, state, detail)
+
+        def _on_agent_load_success(self, agent: Any) -> None:
+            if _channels_is_running():
+                _ch_mod._cli_agent = agent
+                _ch_mod._cli_thread_id = self._conversation_tid
+            self._finish_loader_widget()
+            self._render_status()
+
+        def _on_agent_load_failure(self, exc: BaseException) -> None:
+            self._append_system(f"Agent failed to load: {exc}", style="red")
+            self._finish_loader_widget()
+
+        def _start_background_agent_load(self, workspace: str | None) -> None:
+            self._progress_tracker.prime()
+            self._mount_mcp_loader_widget()
+            self._agent_loader.start(
+                workspace_dir=workspace,
+                checkpointer=self._checkpointer,
+            )
+
+        def _mount_mcp_loader_widget(self) -> None:
+            if not self._progress_tracker.progress:
+                return
+            if self._mcp_loader_widget is not None:
+                try:
+                    self._mcp_loader_widget.remove()
+                except Exception:
+                    pass
+                self._mcp_loader_widget = None
+            widget = MCPLoaderWidget(list(self._progress_tracker.progress.keys()))
+            try:
+                shell = self.query_one("#input-shell", Container)
+                children = list(shell.children)
+                if children:
+                    shell.mount(widget, before=children[0])
+                else:
+                    shell.mount(widget)
+            except Exception:
+                # Compose hasn't happened yet — the mount will be retried
+                # from ``on_mount`` once the DOM is ready.
+                return
+            self._mcp_loader_widget = widget
+
+        def _finish_loader_widget(self) -> None:
+            """Call ``mark_finished`` and clear the ref if self-dismissed."""
+            widget = self._mcp_loader_widget
+            if widget is None:
+                return
+            try:
+                widget.mark_finished()
+            except Exception:
+                pass
+            if widget.dismissed:
+                self._mcp_loader_widget = None
+
+        async def _await_agent_ready(self) -> Any:
+            """Await the agent load, auto-retrying on cold-start or failure."""
+            if self._agent_loader.needs_restart:
+                self._start_background_agent_load(self._workspace_dir)
+            return await self._agent_loader.await_ready()
 
         # ── CommandUI implementation ─────────────────────────
 
@@ -391,7 +485,7 @@ def run_textual_interactive(
                 title=title,
             )
             await container.mount(picker)
-            container.scroll_end(animate=False)
+            self._schedule_scroll_to_bottom(container, delays=())
             picker.focus()
 
             return await self._wait_for_thread_pick(picker)
@@ -408,7 +502,7 @@ def run_textual_interactive(
                 pre_filter_tag=pre_filter_tag,
             )
             await container.mount(browser)
-            container.scroll_end(animate=False)
+            self._schedule_scroll_to_bottom(container, delays=())
             browser.focus()
 
             return await self._wait_for_skill_browse(browser)
@@ -425,10 +519,30 @@ def run_textual_interactive(
                 pre_filter_tag=pre_filter_tag,
             )
             await container.mount(browser)
-            container.scroll_end(animate=False)
+            self._schedule_scroll_to_bottom(container, delays=())
             browser.focus()
 
             return await self._wait_for_mcp_browse(browser)
+
+        async def wait_for_model_pick(
+            self,
+            entries: list[tuple[str, str, str]],
+            current_model: str | None,
+            current_provider: str | None,
+        ) -> tuple[str, str] | None:
+            from .widgets.model_picker import ModelPickerWidget
+
+            container = self.query_one("#chat", VerticalScroll)
+            picker = ModelPickerWidget(
+                entries,
+                current_model=current_model,
+                current_provider=current_provider,
+            )
+            await container.mount(picker)
+            self._schedule_scroll_to_bottom(container, delays=())
+            picker.focus()
+
+            return await self._wait_for_model_pick(picker)
 
         def clear_chat(self) -> None:
             container = self.query_one("#chat", VerticalScroll)
@@ -447,18 +561,13 @@ def run_textual_interactive(
             if not workspace_fixed:
                 self._workspace_dir = create_session_workspace(run_name)
             self._conversation_tid = generate_thread_id()
-            self._agent = load_agent(
-                workspace_dir=self._workspace_dir,
-                checkpointer=self._checkpointer,
-            )
+            # Background reload: next user message awaits it.
+            self._start_background_agent_load(self._workspace_dir)
             self._status_started_at = datetime.now()
-            self._status_base_snapshot = make_empty_status_snapshot(model)
+            self._status_base_snapshot = make_empty_status_snapshot(self._current_model)
             self._status_snapshot = self._status_base_snapshot
             self._status_streaming_text = ""
             self._status_last_input_tokens = None
-            if _channels_is_running():
-                _ch_mod._cli_agent = self._agent
-                _ch_mod._cli_thread_id = self._conversation_tid
             self._render_welcome()
             self._render_status()
             refresh_task = asyncio.create_task(self._refresh_status_snapshot())
@@ -473,18 +582,13 @@ def run_textual_interactive(
                 self._workspace_dir = workspace_dir
 
             self._conversation_tid = thread_id
-            self._agent = load_agent(
-                workspace_dir=self._workspace_dir,
-                checkpointer=self._checkpointer,
-            )
+            # Background reload: history renders immediately; next turn awaits.
+            self._start_background_agent_load(self._workspace_dir)
             self._status_started_at = datetime.now()
-            self._status_base_snapshot = make_empty_status_snapshot(model)
+            self._status_base_snapshot = make_empty_status_snapshot(self._current_model)
             self._status_snapshot = self._status_base_snapshot
             self._status_streaming_text = ""
             self._status_last_input_tokens = None
-            if _channels_is_running():
-                _ch_mod._cli_agent = self._agent
-                _ch_mod._cli_thread_id = self._conversation_tid
             self._render_welcome()
             await self._refresh_status_snapshot()
             self._render_status()
@@ -519,6 +623,10 @@ def run_textual_interactive(
             self._render_welcome()
             self._render_status()
             self.set_interval(1.0, self._render_status)
+            # Kick off agent construction in the background so the TUI
+            # appears instantly; MCP progress shows up in the status bar.
+            if self._agent_loader.agent is None and self._agent_loader.task is None:
+                self._start_background_agent_load(self._workspace_dir)
             refresh_task = asyncio.create_task(self._refresh_status_snapshot())
             self._background_tasks.add(refresh_task)
             refresh_task.add_done_callback(self._background_tasks.discard)
@@ -548,8 +656,22 @@ def run_textual_interactive(
             self.run_worker(
                 self._check_for_updates, exclusive=True, group="update-check"
             )
-            # Auto-start channels
-            self._start_channels()
+
+            # Auto-start channels — needs the agent, so defer to after load
+            async def _deferred_start_channels():
+                try:
+                    await self._await_agent_ready()
+                except Exception:
+                    _channel_logger.debug(
+                        "Skipping channel auto-start because agent load failed",
+                        exc_info=True,
+                    )
+                    return
+                self._start_channels()
+
+            ch_task = asyncio.create_task(_deferred_start_channels())
+            self._background_tasks.add(ch_task)
+            ch_task.add_done_callback(self._background_tasks.discard)
 
         # ── Update check ──────────────────────────────────────
 
@@ -580,7 +702,7 @@ def run_textual_interactive(
                 cfg = load_config()
                 if cfg and cfg.channel_enabled and not _channels_is_running():
                     _auto_start_channel(
-                        self._agent,
+                        self._agent_loader.agent,
                         self._conversation_tid,
                         cfg,
                         send_thinking=self._channel_send_thinking,
@@ -608,6 +730,32 @@ def run_textual_interactive(
             )
 
         # ── Widget helpers ─────────────────────────────────────
+
+        def _schedule_scroll_to_bottom(
+            self,
+            container: VerticalScroll,
+            *,
+            delays: tuple[float, ...] = (0.3, 0.8),
+            immediate: bool = True,
+        ) -> None:
+            """Schedule deferred scrolls so the viewport lands at the bottom.
+
+            Markdown- and list-heavy widgets lay out across multiple refresh
+            cycles, so a single ``scroll_end()`` may fire against a stale
+            ``virtual_size`` and leave the viewport mid-content. Re-schedule
+            ``scroll_end`` at each delay to follow subsequent reflows.
+            """
+            if immediate:
+                self.call_after_refresh(
+                    lambda: container.scroll_end(animate=False),
+                )
+            for delay in delays:
+                self.set_timer(
+                    delay,
+                    lambda: self.call_after_refresh(
+                        lambda: container.scroll_end(animate=False),
+                    ),
+                )
 
         def _append_system(self, text: str, style: str = "dim") -> None:
             """Mount a SystemMessage widget into #chat."""
@@ -699,7 +847,9 @@ def run_textual_interactive(
                 return {"answers": result.get("answers", []), "status": "answered"}
             return {"status": "cancelled"}
 
-        async def _wait_for_thread_pick(self, picker_widget) -> str | None:
+        async def _wait_for_thread_pick(
+            self, picker_widget: ThreadPickerWidget
+        ) -> str | None:
             """Wait for user to pick a thread from ThreadPickerWidget.
 
             Returns the selected thread_id, or ``None`` on cancel/timeout.
@@ -781,6 +931,34 @@ def run_textual_interactive(
             """Handle MCPBrowserWidget.Cancelled message."""
             if self._mcp_browser_future and not self._mcp_browser_future.done():
                 self._mcp_browser_future.set_result(None)
+
+        async def _wait_for_model_pick(self, picker_widget) -> tuple[str, str] | None:
+            """Wait for user to pick a model from ModelPickerWidget.
+
+            Returns ``(name, provider)`` or ``None`` on cancel/timeout.
+            """
+            self._model_picker_future = asyncio.get_event_loop().create_future()
+            try:
+                return await asyncio.wait_for(self._model_picker_future, timeout=120)
+            except (TimeoutError, asyncio.CancelledError):
+                return None
+            finally:
+                self._model_picker_future = None
+                try:
+                    picker_widget.remove()
+                except Exception:
+                    _channel_logger.debug("model picker cleanup failed", exc_info=True)
+                self.query_one("#prompt", ChatTextArea).focus()
+
+        def on_model_picker_widget_picked(self, event) -> None:  # type: ignore[override]
+            """Handle ModelPickerWidget.Picked message."""
+            if self._model_picker_future and not self._model_picker_future.done():
+                self._model_picker_future.set_result((event.name, event.provider))
+
+        def on_model_picker_widget_cancelled(self, event) -> None:  # type: ignore[override]
+            """Handle ModelPickerWidget.Cancelled message."""
+            if self._model_picker_future and not self._model_picker_future.done():
+                self._model_picker_future.set_result(None)
 
         # ── Streaming core ─────────────────────────────────────
 
@@ -875,7 +1053,7 @@ def run_textual_interactive(
                     lambda: container.scroll_end(animate=False),
                 )
 
-            metadata = build_metadata(self._workspace_dir, model)
+            metadata = build_metadata(self._workspace_dir, self._current_model)
             response = ""
 
             async def _remove_w(w: Static | None) -> None:
@@ -970,7 +1148,7 @@ def run_textual_interactive(
                     summarization_w = None
                 try:
                     async for event in stream_agent_events(
-                        self._agent,
+                        self._agent_loader.agent,
                         _stream_input,
                         self._conversation_tid,
                         metadata=metadata,
@@ -1405,17 +1583,11 @@ def run_textual_interactive(
                                     clean or state.response_text
                                 )
                                 await container.mount(assistant_w)
-                                # Markdown rendering is async and needs multiple
-                                # layout cycles to compute final height.  Schedule
-                                # repeated deferred scrolls so long content stays
-                                # visible even when Markdown takes time to lay out.
-                                for delay in (0.15, 0.4, 0.8, 1.5):
-                                    self.set_timer(
-                                        delay,
-                                        lambda: self.call_after_refresh(
-                                            lambda: container.scroll_end(animate=False),
-                                        ),
-                                    )
+                                self._schedule_scroll_to_bottom(
+                                    container,
+                                    delays=(0.15, 0.4, 0.8, 1.5),
+                                    immediate=False,
+                                )
                             # Mount token usage stats
                             if state.total_input_tokens or state.total_output_tokens:
                                 await container.mount(
@@ -1498,18 +1670,7 @@ def run_textual_interactive(
                     ):
                         on_thinking_cb(state.thinking_text.rstrip())
                     # Final scrolls to ensure last content is visible.
-                    # Markdown layout is async — schedule multiple deferred
-                    # scrolls so long content eventually scrolls into view.
-                    self.call_after_refresh(
-                        lambda: container.scroll_end(animate=False),
-                    )
-                    for delay in (0.3, 0.8):
-                        self.set_timer(
-                            delay,
-                            lambda: self.call_after_refresh(
-                                lambda: container.scroll_end(animate=False),
-                            ),
-                        )
+                    self._schedule_scroll_to_bottom(container)
 
                 # HITL / ask_user: if interrupt was handled, loop back to resume stream
                 if state.pending_interrupt is None and state.pending_ask_user is None:
@@ -1533,6 +1694,14 @@ def run_textual_interactive(
                     resolve_file_mentions, user_text, self._workspace_dir
                 )
                 await self._refresh_status_snapshot(message_to_send)
+
+                # Block the turn on MCP tools finishing, if still in flight.
+                # ``_on_agent_load_failure`` is the sole reporter for load
+                # errors; callers just return so the send is dropped.
+                try:
+                    await self._await_agent_ready()
+                except Exception:
+                    return
 
                 await self._stream_with_widgets(
                     message_to_send,
@@ -1654,8 +1823,19 @@ def run_textual_interactive(
 
                 # Handle slash commands from channel
                 if msg.content.strip().startswith("/"):
+                    # Only wait for the agent if the command actually
+                    # needs it — otherwise ``/mcp add`` & friends would
+                    # hang behind a failing MCP load they're meant to fix.
+                    cmd, cmd_args = cmd_manager.resolve(msg.content) or (None, [])
+                    agent = None
+                    if cmd is not None and cmd.needs_agent(cmd_args):
+                        try:
+                            agent = await self._await_agent_ready()
+                        except Exception as exc:
+                            _set_channel_response(msg.msg_id, f"Error: {exc}")
+                            return
                     ctx = CommandContext(
-                        agent=self._agent,
+                        agent=agent,
                         thread_id=self._conversation_tid,
                         ui=ChannelCommandUI(
                             msg,
@@ -1687,6 +1867,14 @@ def run_textual_interactive(
                             msg.msg_id, f"Command executed: {msg.content}"
                         )
                         return  # outer finally handles _busy / widget cleanup
+
+                # Non-slash message — streams through the agent, so wait
+                # for readiness now.
+                try:
+                    await self._await_agent_ready()
+                except Exception as exc:
+                    _set_channel_response(msg.msg_id, f"Error: {exc}")
+                    return
 
                 response = ""
                 try:
@@ -1823,11 +2011,12 @@ def run_textual_interactive(
                     # Force-resolve the future
                     self._ask_user_future.set_result({"type": "cancelled"})
                 return
-            # Delegate to ApprovalWidget, ThreadPickerWidget, or SkillBrowserWidget if focused
+            # Delegate to focused interactive widget
             focused = self.focused
             if focused is not None:
                 from .widgets.approval_widget import ApprovalWidget
                 from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.model_picker import ModelPickerWidget
                 from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
@@ -1843,6 +2032,14 @@ def run_textual_interactive(
                 if isinstance(focused, MCPBrowserWidget):
                     focused.action_cancel()
                     return
+                if isinstance(focused, ModelPickerWidget):
+                    focused.action_cancel()
+                    if (
+                        self._model_picker_future
+                        and not self._model_picker_future.done()
+                    ):
+                        self._model_picker_future.set_result(None)
+                    return
             if self._queued_messages:
                 self._queued_messages.pop()
                 self._render_queue_indicator()
@@ -1856,12 +2053,13 @@ def run_textual_interactive(
                 self._render_completions()
                 return
 
-            # Skip if an ApprovalWidget, AskUserWidget, ThreadPickerWidget, or SkillBrowserWidget has focus
+            # Skip if an interactive picker widget has focus
             focused = self.focused
             if focused is not None:
                 from .widgets.approval_widget import ApprovalWidget
                 from .widgets.ask_user_widget import AskUserWidget
                 from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.model_picker import ModelPickerWidget
                 from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
@@ -1878,6 +2076,9 @@ def run_textual_interactive(
                     focused.action_move_up()
                     return
                 if isinstance(focused, MCPBrowserWidget):
+                    focused.action_move_up()
+                    return
+                if isinstance(focused, ModelPickerWidget):
                     focused.action_move_up()
                     return
             if self._queued_messages:
@@ -1915,6 +2116,7 @@ def run_textual_interactive(
                 from .widgets.approval_widget import ApprovalWidget
                 from .widgets.ask_user_widget import AskUserWidget
                 from .widgets.mcp_browser import MCPBrowserWidget
+                from .widgets.model_picker import ModelPickerWidget
                 from .widgets.skill_browser import SkillBrowserWidget
                 from .widgets.thread_selector import ThreadPickerWidget
 
@@ -1931,6 +2133,9 @@ def run_textual_interactive(
                     focused.action_move_down()
                     return
                 if isinstance(focused, MCPBrowserWidget):
+                    focused.action_move_down()
+                    return
+                if isinstance(focused, ModelPickerWidget):
                     focused.action_move_down()
                     return
 
@@ -2056,17 +2261,42 @@ def run_textual_interactive(
             prompt_widget.disabled = True
             self._render_status()
 
-            ctx = CommandContext(
-                agent=self._agent,
-                thread_id=self._conversation_tid,
-                ui=self,
-                workspace_dir=self._workspace_dir,
-                checkpointer=self._checkpointer,
-                input_tokens_hint=self._status_last_input_tokens,
-            )
-
             try:
+                # Only gate on agent readiness for commands that need it —
+                # recovery commands like ``/mcp add`` must run even when
+                # ``_await_agent_ready`` would hang on a broken MCP load.
+                cmd, cmd_args = cmd_manager.resolve(command) or (None, [])
+                agent = None
+                if cmd is not None and cmd.needs_agent(cmd_args):
+                    try:
+                        agent = await self._await_agent_ready()
+                    except Exception:
+                        # ``_on_agent_load_failure`` already surfaced the error.
+                        return
+                ctx = CommandContext(
+                    agent=agent,
+                    thread_id=self._conversation_tid,
+                    ui=self,
+                    workspace_dir=self._workspace_dir,
+                    checkpointer=self._checkpointer,
+                    input_tokens_hint=self._status_last_input_tokens,
+                )
+
                 if await cmd_manager.execute(command, ctx):
+                    # Sync agent back if command replaced it (e.g. /model).
+                    # ``is not None`` guard: non-agent commands (ctx.agent
+                    # starts None) must not clobber a valid loaded agent.
+                    if (
+                        ctx.agent is not None
+                        and ctx.agent is not self._agent_loader.agent
+                    ):
+                        # ``adopt`` also cancels/supersedes any in-flight
+                        # load so a late completion can't overwrite the
+                        # replacement agent (/model on a broken provider).
+                        self._agent_loader.adopt(ctx.agent)
+                        if _channels_is_running():
+                            _ch_mod._cli_agent = ctx.agent
+                            _ch_mod._cli_thread_id = self._conversation_tid
                     # Do NOT invalidate the usage baseline after /compact.
                     # build_session_status_snapshot() only counts raw checkpoint
                     # messages (~46 tokens) and misses system prompt + tool
@@ -2163,7 +2393,12 @@ def run_textual_interactive(
             await container.mount(
                 SystemMessage("── End of history ──", msg_style="dim")
             )
-            container.scroll_end(animate=False)
+            # History can hold dozens of Markdown-heavy AssistantMessages
+            # whose async layout keeps growing virtual_size for several
+            # seconds; schedule enough retries to catch the final reflow.
+            self._schedule_scroll_to_bottom(
+                container, delays=(0.1, 0.3, 0.6, 1.0, 1.8, 3.0)
+            )
 
         # ── Quit handling ──────────────────────────────────────
 
@@ -2233,25 +2468,25 @@ def run_textual_interactive(
                     self._status_base_snapshot = apply_user_text_to_snapshot(
                         make_usage_status_snapshot(
                             self._status_last_input_tokens,
-                            model_name=model,
+                            model_name=self._current_model,
                         ),
                         pending,
                     )
                 else:
                     self._status_base_snapshot = await build_session_status_snapshot(
                         self._conversation_tid,
-                        model_name=model,
+                        model_name=self._current_model,
                         pending_user_text=pending,
                     )
             elif self._status_last_input_tokens is not None:
                 self._status_base_snapshot = make_usage_status_snapshot(
                     self._status_last_input_tokens,
-                    model_name=model,
+                    model_name=self._current_model,
                 )
             else:
                 self._status_base_snapshot = await build_session_status_snapshot(
                     self._conversation_tid,
-                    model_name=model,
+                    model_name=self._current_model,
                 )
             if reset_streaming_text:
                 self._status_streaming_text = ""
@@ -2264,7 +2499,7 @@ def run_textual_interactive(
             self._status_last_input_tokens = input_tokens
             self._status_base_snapshot = make_usage_status_snapshot(
                 input_tokens,
-                model_name=model,
+                model_name=self._current_model,
             )
             self._rebuild_status_snapshot()
 
@@ -2279,9 +2514,20 @@ def run_textual_interactive(
             self._status_last_input_tokens = tokens_after
             self._status_base_snapshot = make_usage_status_snapshot(
                 tokens_after,
-                model_name=model,
+                model_name=self._current_model,
             )
             self._rebuild_status_snapshot()
+
+        def update_status_after_model_change(
+            self, new_model: str, new_provider: str | None = None
+        ) -> None:
+            """Update the status bar and welcome banner after /model switches the LLM."""
+            self._current_model = new_model
+            if new_provider is not None:
+                self._current_provider = new_provider
+            self._status_base_snapshot = make_empty_status_snapshot(new_model)
+            self._rebuild_status_snapshot()
+            self._render_welcome()
 
         def _set_status_streaming_text(self, text: str | None) -> None:
             """Update in-flight assistant text shown in the context bar."""
@@ -2328,8 +2574,8 @@ def run_textual_interactive(
                     thread_id=self._conversation_tid,
                     workspace_dir=self._workspace_dir,
                     mode=mode,
-                    model=model,
-                    provider=provider,
+                    model=self._current_model,
+                    provider=self._current_provider,
                     ui_backend="tui",
                     channels=channels_info,
                 )
@@ -2343,6 +2589,8 @@ def run_textual_interactive(
                 or getattr(self.screen.size, "width", 0)
                 or 80
             )
+            # MCP load progress lives in the dedicated MCPLoaderWidget
+            # above the input bar — no need to duplicate it here.
             if self._busy:
                 hint_label = "vibe researching..."
                 hint_style = f"on {STATUS_BAR_BG} {STATUS_HINT_BUSY} bold"
@@ -2414,15 +2662,11 @@ def run_textual_interactive(
     async def _amain() -> None:
         async with get_checkpointer() as checkpointer:
             effective_workspace = workspace_dir
-            effective_thread_id = thread_id
+            effective_thread_id: str | None = None
             resumed = False
             resume_warning = ""
             if thread_id:
-                if await thread_exists(thread_id):
-                    resolved = thread_id
-                else:
-                    similar = await find_similar_threads(thread_id)
-                    resolved = similar[0] if len(similar) == 1 else None
+                resolved, matches = await resolve_thread_id_prefix(thread_id)
                 if resolved:
                     meta = await get_thread_metadata(resolved)
                     ws = (meta or {}).get("workspace_dir", "")
@@ -2430,6 +2674,11 @@ def run_textual_interactive(
                         effective_workspace = ws
                     effective_thread_id = resolved
                     resumed = True
+                elif matches:
+                    resume_warning = (
+                        f"Thread prefix '{thread_id}' is ambiguous "
+                        f"({', '.join(matches)}). Starting new session."
+                    )
                 else:
                     resume_warning = (
                         f"Thread '{thread_id}' not found. Starting new session."
@@ -2437,12 +2686,10 @@ def run_textual_interactive(
             if not effective_thread_id:
                 effective_thread_id = generate_thread_id()
 
-            initial_agent = load_agent(
-                workspace_dir=effective_workspace,
-                checkpointer=checkpointer,
-            )
+            # The TUI opens instantly and starts MCP loading in the
+            # background; ``on_mount`` in the app kicks off the real
+            # ``load_agent`` call and awaits it before the first turn.
             app = EvoTextualInteractiveApp(
-                agent=initial_agent,
                 thread_id_value=effective_thread_id,
                 workspace=effective_workspace,
                 checkpointer=checkpointer,
@@ -2450,7 +2697,29 @@ def run_textual_interactive(
                 resumed=resumed,
                 resume_warning=resume_warning,
             )
-            await app.run_async()
+            try:
+                await app.run_async()
+            finally:
+                from .resume_hint import print_resume_hint
+
+                # Best-effort resume hint — guarded so failures here (e.g.
+                # DB teardown race during abnormal shutdown) cannot shadow
+                # the original run_async traceback.
+                exit_tid = getattr(app, "_conversation_tid", None)
+                hint_tid: str | None = None
+                if exit_tid:
+                    try:
+                        if await thread_exists(exit_tid):
+                            hint_tid = exit_tid
+                    except Exception:
+                        _channel_logger.debug(
+                            "resume-hint thread_exists lookup failed",
+                            exc_info=True,
+                        )
+                try:
+                    print_resume_hint(hint_tid)
+                except Exception:
+                    _channel_logger.debug("print_resume_hint failed", exc_info=True)
 
     import nest_asyncio  # type: ignore[import-untyped]
 

@@ -64,13 +64,13 @@ def _to_short_path(path: str) -> str:
 def get_db_path() -> Path:
     """Return the sessions database path, creating parents.
 
-    Reuses ``get_config_dir()`` for XDG_CONFIG_HOME support, then applies
+    Uses ``paths.DATA_DIR`` (~/.evoscientist/ by default), then applies
     a best-effort Windows 8.3 short-path conversion on the *directory*
     (which exists after ``mkdir``) so sqlite3 can handle non-ASCII paths.
     """
-    from .config.settings import get_config_dir
+    from .paths import DATA_DIR
 
-    db_dir = get_config_dir()
+    db_dir = DATA_DIR
     db_dir.mkdir(parents=True, exist_ok=True)
     return Path(_to_short_path(str(db_dir))) / "sessions.db"
 
@@ -323,17 +323,38 @@ async def find_similar_threads(thread_id: str, limit: int = 5) -> list[str]:
     async with aiosqlite.connect(db_path, timeout=30.0) as conn:
         if not await _table_exists(conn, "checkpoints"):
             return []
-        query = """
+        # Escape SQL LIKE wildcards so user-supplied prefixes are matched
+        # literally (e.g. `--resume %` must not match every thread).
+        escaped = (
+            thread_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        query = r"""
             SELECT DISTINCT thread_id
             FROM checkpoints
-            WHERE thread_id LIKE ?
+            WHERE thread_id LIKE ? ESCAPE '\'
               AND json_extract(metadata, '$.agent_name') = ?
             ORDER BY thread_id
             LIMIT ?
         """
-        async with conn.execute(query, (thread_id + "%", AGENT_NAME, limit)) as cur:
+        async with conn.execute(query, (escaped + "%", AGENT_NAME, limit)) as cur:
             rows = await cur.fetchall()
             return [r[0] for r in rows]
+
+
+async def resolve_thread_id_prefix(tid: str) -> tuple[str | None, list[str]]:
+    """Resolve a (possibly partial) thread ID.
+
+    Returns ``(resolved_id, matches)``:
+    - ``(full_id, [])`` when *tid* is an exact hit or a unique prefix.
+    - ``(None, [a, b, ...])`` when the prefix is ambiguous (multiple matches).
+    - ``(None, [])`` when no thread matches.
+    """
+    if await thread_exists(tid):
+        return tid, []
+    similar = await find_similar_threads(tid)
+    if len(similar) == 1:
+        return similar[0], []
+    return None, similar
 
 
 async def delete_thread(thread_id: str) -> bool:

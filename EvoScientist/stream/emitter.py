@@ -82,7 +82,11 @@ class StreamEventEmitter:
 
     @staticmethod
     def subagent_tool_result(
-        subagent: str, name: str, content: str, success: bool = True
+        subagent: str,
+        name: str,
+        content: str,
+        success: bool = True,
+        tool_call_id: str = "",
     ) -> StreamEvent:
         """Tool result from inside a sub-agent."""
         return StreamEvent(
@@ -93,6 +97,7 @@ class StreamEventEmitter:
                 "name": name,
                 "content": content,
                 "success": success,
+                "id": tool_call_id,
             },
         )
 

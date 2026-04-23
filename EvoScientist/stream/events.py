@@ -801,11 +801,12 @@ async def stream_agent_events(
                                 info.id,
                             ).data
                     name = getattr(msg, "name", "unknown")
+                    tool_call_id = getattr(msg, "tool_call_id", "") or ""
                     raw_content, _is_img = _extract_tool_content(msg)
                     content = raw_content[: DisplayLimits.TOOL_RESULT_MAX]
                     success = is_success(content)
                     yield emitter.subagent_tool_result(
-                        subagent, name, content, success
+                        subagent, name, content, success, tool_call_id
                     ).data
                 else:
                     for ev in _process_tool_result(msg, emitter, main_tracker):

@@ -1,6 +1,6 @@
 [project]
 name = "EvoScientist"
-version = "0.0.7"
+version = "0.0.8"
 description = "EvoScientist: Towards Self-Evolving AI Scientists for End-to-End Scientific Discovery"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "deepagents>=0.5.1",
+    "deepagents>=0.5.3",
     "langchain>=1.2.12",
     "langchain-anthropic>=1.4.0",
     "langchain-openai>=1.1",
@@ -34,6 +34,7 @@ dependencies = [
     "langgraph-cli[inmem]>=0.4",
     "langgraph-checkpoint-sqlite>=3.0.0",
     "httpx>=0.27",
+    "lazy-loader>=0.5",
     "markdownify>=0.14",
     "nest-asyncio>=1.6",
     "langchain-mcp-adapters>=0.1",

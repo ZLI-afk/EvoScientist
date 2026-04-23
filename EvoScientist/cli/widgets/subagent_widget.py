@@ -208,10 +208,11 @@ class SubAgentWidget(Vertical):
                 widget.set_success(content)
             else:
                 widget.set_error(content)
-            # Move from running to completed
+            # Move from running to completed (dedup guards against repeat
+            # deliveries of the same tool result inflating the collapse summary).
             if matched_key and matched_key in self._running_ids:
                 self._running_ids.remove(matched_key)
-            if matched_key:
+            if matched_key and matched_key not in self._completed_ids:
                 self._completed_ids.append(matched_key)
             self._update_visibility()
 

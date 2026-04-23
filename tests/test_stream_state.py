@@ -61,6 +61,20 @@ class TestSubAgentState:
         assert result is not None
         assert result["content"] == "output"
 
+    def test_add_tool_result_matched_by_id(self):
+        """Concurrent same-name tools must be paired by tool_call_id, not name order."""
+        sa = SubAgentState("agent")
+        sa.add_tool_call("execute", {"cmd": "a"}, "tc1")
+        sa.add_tool_call("execute", {"cmd": "b"}, "tc2")
+        # Result for tc2 arrives first (out-of-order).
+        sa.add_tool_result("execute", "out2", True, tool_call_id="tc2")
+        assert sa.get_result_for(sa.tool_calls[1])["content"] == "out2"
+        assert sa.get_result_for(sa.tool_calls[0]) is None
+        # Then tc1's result arrives.
+        sa.add_tool_result("execute", "out1", True, tool_call_id="tc1")
+        assert sa.get_result_for(sa.tool_calls[0])["content"] == "out1"
+        assert sa.get_result_for(sa.tool_calls[1])["content"] == "out2"
+
     def test_get_result_for_no_match(self):
         sa = SubAgentState("agent")
         tc = {"id": "tc_missing", "name": "x", "args": {}}
@@ -188,10 +202,12 @@ class TestStreamState:
                 "name": "execute",
                 "content": "output",
                 "success": True,
+                "id": "tc1",
             }
         )
         sa = state.subagents[0]
         assert len(sa.tool_results) == 1
+        assert sa.get_result_for(sa.tool_calls[0])["content"] == "output"
 
     def test_handle_subagent_end(self):
         state = StreamState()

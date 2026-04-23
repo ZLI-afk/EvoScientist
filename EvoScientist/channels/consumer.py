@@ -456,6 +456,8 @@ class InboundConsumer:
             if channel:
                 await channel.start_typing(msg.chat_id)
 
+            _last_sent_thinking: str | None = None
+
             for _hitl_round in range(_MAX_HITL_ROUNDS):
                 final_content = ""
                 thinking_buffer: list[str] = []
@@ -463,6 +465,28 @@ class InboundConsumer:
                 subagent_text_buffers: dict[str, tuple[str, list[str]]] = {}
                 thinking_sent = False
                 interrupt_data: dict | None = None
+
+                async def _flush_thinking_buffer(
+                    buffer: list[str] = thinking_buffer,
+                ) -> bool:
+                    """Send the current thinking buffer, dedup by content."""
+                    nonlocal thinking_sent, _last_sent_thinking
+                    if not channel or thinking_sent or not buffer:
+                        return False
+
+                    full_thinking = "".join(buffer).rstrip()
+                    buffer.clear()
+                    if not full_thinking or full_thinking == _last_sent_thinking:
+                        return False
+
+                    await channel.send_thinking_message(
+                        msg.sender_id,
+                        full_thinking,
+                        msg.metadata,
+                    )
+                    thinking_sent = True
+                    _last_sent_thinking = full_thinking
+                    return True
 
                 async for event in _timeout_aiter(
                     stream_agent_events(
@@ -492,16 +516,7 @@ class InboundConsumer:
                         if event.get("name") == "write_todos" and not todo_sent:
                             todos = event.get("args", {}).get("todos", [])
                             if todos and channel:
-                                if thinking_buffer and not thinking_sent:
-                                    full_thinking = "".join(thinking_buffer)
-                                    if full_thinking:
-                                        await channel.send_thinking_message(
-                                            msg.sender_id,
-                                            full_thinking,
-                                            msg.metadata,
-                                        )
-                                        thinking_sent = True
-                                    thinking_buffer.clear()
+                                await _flush_thinking_buffer()
                                 await channel.send_todo_message(
                                     msg.sender_id,
                                     _format_todo_list(todos),
@@ -533,14 +548,7 @@ class InboundConsumer:
                         break  # exit async for to handle ask_user
 
                 # Flush thinking
-                if thinking_buffer and not thinking_sent and channel:
-                    full_thinking = "".join(thinking_buffer)
-                    if full_thinking:
-                        await channel.send_thinking_message(
-                            msg.sender_id,
-                            full_thinking,
-                            msg.metadata,
-                        )
+                await _flush_thinking_buffer()
 
                 # No interrupt — normal completion
                 if interrupt_data is None:

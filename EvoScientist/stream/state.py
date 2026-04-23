@@ -42,17 +42,34 @@ class SubAgentState:
             return
         self.tool_calls.append(tc_data)
 
-    def add_tool_result(self, name: str, content: str, success: bool = True):
-        result = {"name": name, "content": content, "success": success}
+    def add_tool_result(
+        self,
+        name: str,
+        content: str,
+        success: bool = True,
+        tool_call_id: str = "",
+    ):
+        result = {
+            "name": name,
+            "content": content,
+            "success": success,
+            "tool_call_id": tool_call_id,
+        }
         self.tool_results.append(result)
-        # Try to match result to the first unmatched tool call with same name
+        # Preferred: exact id match (correct under concurrent same-name tools).
+        if tool_call_id:
+            for tc in self.tool_calls:
+                if tc.get("id") == tool_call_id:
+                    self._result_map[tool_call_id] = result
+                    return
+        # Fallback: first unmatched tool call with same name.
         for tc in self.tool_calls:
             tc_id = tc.get("id", "")
             tc_name = tc.get("name", "")
             if tc_id and tc_id not in self._result_map and tc_name == name:
                 self._result_map[tc_id] = result
                 return
-        # Fallback: match first unmatched tool call
+        # Last resort: first unmatched tool call regardless of name.
         for tc in self.tool_calls:
             tc_id = tc.get("id", "")
             if tc_id and tc_id not in self._result_map:
@@ -257,6 +274,7 @@ class StreamState:
                 event.get("name", "unknown"),
                 event.get("content", ""),
                 event.get("success", True),
+                event.get("id", ""),
             )
 
         elif event_type == "subagent_end":

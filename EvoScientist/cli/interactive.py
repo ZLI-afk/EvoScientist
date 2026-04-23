@@ -20,6 +20,7 @@ from prompt_toolkit.completion import (  # type: ignore[import-untyped]
 from prompt_toolkit.formatted_text import HTML  # type: ignore[import-untyped]
 from prompt_toolkit.history import FileHistory  # type: ignore[import-untyped]
 from prompt_toolkit.key_binding import KeyBindings  # type: ignore[import-untyped]
+from prompt_toolkit.patch_stdout import patch_stdout  # type: ignore[import-untyped]
 from prompt_toolkit.shortcuts import CompleteStyle  # type: ignore[import-untyped]
 from prompt_toolkit.styles import Style as PtStyle  # type: ignore[import-untyped]
 from rich.markdown import Markdown
@@ -33,15 +34,16 @@ import EvoScientist.cli.channel as _ch_mod
 from ..sessions import (
     _format_relative_time,
     delete_thread,
-    find_similar_threads,
     generate_thread_id,
     get_checkpointer,
     get_thread_messages,
     get_thread_metadata,
     list_threads,
+    resolve_thread_id_prefix,
     thread_exists,
 )
-from ..stream.display import console
+from ..stream.console import console
+from ._agent_loader import BackgroundAgentLoader, MCPProgressTracker
 from ._constants import LOGO_GRADIENT, LOGO_LINES, WELCOME_SLOGANS, build_metadata
 from .agent import _create_session_workspace, _load_agent, _shorten_path
 from .channel import (
@@ -62,6 +64,7 @@ from .skills_cmd import (
     _cmd_uninstall_skill,
 )
 from .status_bar import (
+    SPINNER_FRAMES,
     STATUS_BAD,
     STATUS_BAR_BG,
     STATUS_CRITICAL,
@@ -82,6 +85,9 @@ from .tui_interactive import run_textual_interactive
 from .tui_runtime import resolve_ui_backend, run_streaming
 
 _channel_logger = logging.getLogger(__name__)
+
+# Keeps references to fire-and-forget coroutines so they aren't GC'd mid-flight.
+_background_tasks: set[asyncio.Task] = set()
 
 
 # =============================================================================
@@ -162,6 +168,7 @@ _SLASH_COMMANDS = [
     ("/mcp", "Manage MCP servers"),
     ("/channel", "Configure messaging channels"),
     ("/compact", "Compact conversation to free context"),
+    ("/model", "Switch model (--save to persist)"),
     ("/exit", "Quit EvoScientist"),
 ]
 
@@ -294,13 +301,10 @@ def cmd_interactive(
 
     from .. import paths
 
-    memory_dir = str(paths.MEMORY_DIR)
+    memory_dir = str(paths.MEMORIES_DIR)
 
-    from ..config.settings import get_config_dir
-
-    config_dir = get_config_dir()
-    config_dir.mkdir(parents=True, exist_ok=True)
-    history_file = str(config_dir / "history")
+    paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    history_file = str(paths.DATA_DIR / "history")
 
     # Key bindings: Enter submits, Alt+Enter (Option+Enter) inserts newline
     _kb = KeyBindings()
@@ -331,7 +335,6 @@ def cmd_interactive(
 
     # Mutable state for async loop
     state: dict[str, Any] = {
-        "agent": None,
         "thread_id": thread_id or generate_thread_id(),
         "workspace_dir": workspace_dir,
         "running": True,
@@ -343,6 +346,60 @@ def cmd_interactive(
         "status_streaming_text": "",
         "status_last_input_tokens": None,
     }
+
+    progress_tracker = MCPProgressTracker()
+
+    def _on_mcp_progress(event: str, server: str, detail: str) -> None:
+        """Record progress + print the inline ✓/✗ line.
+
+        Runs on the MCP worker thread; ``console.print`` while the main
+        loop is inside ``patch_stdout`` lands above the prompt safely.
+        """
+        new_state = progress_tracker.record(event, server, detail)
+        if new_state == "ok":
+            console.print(
+                f"[green]\u2713[/green] [dim]MCP[/dim] [bold]{server}[/bold] "
+                f"[dim]({detail} tools)[/dim]"
+            )
+        elif new_state == "error":
+            console.print(
+                f"[red]\u2717[/red] [dim]MCP[/dim] [bold]{server}[/bold] "
+                f"[red]failed:[/red] {escape(detail)}"
+            )
+
+    agent_loader = BackgroundAgentLoader(
+        _load_agent,
+        on_progress=_on_mcp_progress,
+    )
+
+    def _start_agent_load(checkpointer) -> None:
+        progress_tracker.prime()
+        agent_loader.start(
+            workspace_dir=state["workspace_dir"],
+            checkpointer=checkpointer,
+            config=config,
+        )
+
+    async def _await_agent_ready() -> Any:
+        """Await the agent load and apply CLI-side post-load side effects.
+
+        Raises when called before ``_start_agent_load``: reloading here
+        would drop the SQLite checkpointer and silently lose persistence.
+        """
+        try:
+            agent = await agent_loader.await_ready()
+        except RuntimeError as exc:
+            if "before start()" in str(exc):
+                raise RuntimeError(
+                    "_await_agent_ready called before _start_agent_load — "
+                    "the checkpointer reference is not available here."
+                ) from exc
+            raise
+        await _refresh_status_snapshot(reset_streaming_text=True)
+        if _channels_is_running():
+            _ch_mod._cli_agent = agent
+            _ch_mod._cli_thread_id = state["thread_id"]
+        return agent
 
     def _rebuild_status_snapshot() -> None:
         """Compose the visible snapshot from thread state + live output."""
@@ -403,11 +460,29 @@ def cmd_interactive(
             width = get_app().output.get_size().columns
         except Exception:
             width = console.size.width
-        return build_status_fragments(
+        fragments = build_status_fragments(
             state["status_snapshot"],
             state["status_started_at"],
             width,
         )
+        if agent_loader.is_pending:
+            # Per-server ✓/✗ lines are printed above the prompt by
+            # `_on_mcp_progress`; this just shows the animated summary.
+            done, total = progress_tracker.totals()
+            frame = SPINNER_FRAMES[
+                int(datetime.now().timestamp() * 10) % len(SPINNER_FRAMES)
+            ]
+            label = (
+                f"{frame} Loading MCP tools {done}/{total} "
+                if total and width >= 60
+                else f"{frame} Loading MCP tools "
+            )
+            fragments = [
+                ("class:status-bar-warn", label),
+                ("class:status-bar-dim", "│ "),
+                *fragments,
+            ]
+        return fragments
 
     def _stream_status_footer():
         """Render the live Rich footer used during streaming output."""
@@ -435,16 +510,14 @@ def cmd_interactive(
 
     async def _resolve_thread_id(tid: str) -> str | None:
         """Resolve a (possibly partial) thread ID. Returns full ID or None."""
-        if await thread_exists(tid):
-            return tid
-        similar = await find_similar_threads(tid)
-        if len(similar) == 1:
-            return similar[0]
-        if len(similar) > 1:
+        resolved, matches = await resolve_thread_id_prefix(tid)
+        if resolved:
+            return resolved
+        if matches:
             console.print(
                 f"[yellow]Ambiguous thread ID '{escape(tid)}'. Matches:[/yellow]"
             )
-            for s in similar:
+            for s in matches:
                 console.print(f"  [cyan]{s}[/cyan]")
             return None
         console.print(f"[red]Thread '{escape(tid)}' not found.[/red]")
@@ -638,17 +711,10 @@ def cmd_interactive(
             state["workspace_dir"] = ws
         state["status_started_at"] = datetime.now()
         state["status_last_input_tokens"] = None
-        console.print("[dim]Loading session...[/dim]")
-        state["agent"] = _load_agent(
-            workspace_dir=state["workspace_dir"],
-            checkpointer=checkpointer,
-            config=config,
-        )
+        # Rebuild the agent in the background so the resumed transcript
+        # and prompt render immediately; the next message awaits the load.
+        _start_agent_load(checkpointer)
         await _refresh_status_snapshot(reset_streaming_text=True)
-        # Sync shared refs if channel is running
-        if _channels_is_running():
-            _ch_mod._cli_agent = state["agent"]
-            _ch_mod._cli_thread_id = state["thread_id"]
         console.print(f"[green]Resumed session:[/green] [yellow]{resolved}[/yellow]")
         if state["workspace_dir"]:
             console.print(
@@ -676,6 +742,7 @@ def cmd_interactive(
 
     async def _async_main_loop():
         """Async main loop with prompt_async and channel queue checking."""
+        nonlocal model
         async with get_checkpointer() as checkpointer:
             # Handle --thread-id resume
             if thread_id:
@@ -689,13 +756,18 @@ def cmd_interactive(
                     state["status_last_input_tokens"] = None
                     if ws:
                         state["workspace_dir"] = ws
+                else:
+                    # Resolution failed (ambiguous/not-found); the user's raw
+                    # input is still seeded in state["thread_id"] from init.
+                    # Replace with a fresh ID so a new session isn't
+                    # checkpointed under the bad prefix.
+                    state["thread_id"] = generate_thread_id()
 
-            console.print("[dim]Loading agent...[/dim]")
-            state["agent"] = _load_agent(
-                workspace_dir=state["workspace_dir"],
-                checkpointer=checkpointer,
-                config=config,
-            )
+            # Kick off agent construction (MCP tool enumeration is the
+            # slow part) in the background so the banner and prompt can
+            # appear immediately.  The status bar shows a spinner while
+            # this is in flight; submitting a message awaits the result.
+            _start_agent_load(checkpointer)
             await _refresh_status_snapshot(reset_streaming_text=True)
 
             # Print banner
@@ -712,6 +784,7 @@ def cmd_interactive(
                 console.print(
                     f"[green]Resumed session [yellow]{state['thread_id']}[/yellow][/green]\n"
                 )
+                await _render_history(state["thread_id"])
             else:
                 print_banner(
                     state["thread_id"],
@@ -813,14 +886,15 @@ def cmd_interactive(
                     """Send ask_user questions to channel user and wait for reply."""
                     return _ch_mod.channel_ask_user_prompt(ask_user_data, msg)
 
-                meta = build_metadata(state["workspace_dir"], model)
                 try:
+                    ready_agent = await _await_agent_ready()
+                    meta = build_metadata(state["workspace_dir"], model)
                     await _refresh_status_snapshot(
                         msg.content, reset_streaming_text=True
                     )
                     response = run_streaming(
                         ui_backend=state["ui_backend"],
-                        agent=state["agent"],
+                        agent=ready_agent,
                         message=msg.content,
                         thread_id=state["thread_id"],
                         show_thinking=show_thinking,
@@ -873,7 +947,9 @@ def cmd_interactive(
                 )
             )
 
-            # Auto-start channel if enabled in config
+            # Auto-start channel if enabled in config.  Needs the agent
+            # bound before the bus starts polling, so schedule it as a
+            # background coroutine that waits for the loader first.
             from ..config import load_config
 
             _channel_cfg = load_config()
@@ -882,12 +958,29 @@ def cmd_interactive(
                 and _channel_cfg.channel_enabled
                 and not _channels_is_running()
             ):
-                _auto_start_channel(
-                    state["agent"],
-                    state["thread_id"],
-                    _channel_cfg,
-                    send_thinking=channel_send_thinking,
+
+                async def _deferred_auto_start_channel(cfg):
+                    try:
+                        agent = await _await_agent_ready()
+                    except Exception as e:
+                        console.print(
+                            f"[red]Channel auto-start skipped: agent load failed:[/red] "
+                            f"{escape(str(e))}"
+                        )
+                        return
+                    if not _channels_is_running():
+                        _auto_start_channel(
+                            agent,
+                            state["thread_id"],
+                            cfg,
+                            send_thinking=channel_send_thinking,
+                        )
+
+                _auto_start_task = asyncio.create_task(
+                    _deferred_auto_start_channel(_channel_cfg)
                 )
+                _background_tasks.add(_auto_start_task)
+                _auto_start_task.add_done_callback(_background_tasks.discard)
 
             # Update check — non-blocking, runs in background thread
             import concurrent.futures
@@ -923,11 +1016,16 @@ def cmd_interactive(
                 _print_separator()
                 while state["running"]:
                     try:
-                        user_input = await session.prompt_async(
-                            HTML("<ansiblue><b>\u276f</b></ansiblue> "),
-                            bottom_toolbar=_bottom_toolbar,
-                            refresh_interval=1.0,
-                        )
+                        # ``patch_stdout`` routes stray ``print`` /
+                        # ``console.print`` calls — including the MCP
+                        # progress callback firing from a worker thread —
+                        # above the live prompt instead of over it.
+                        with patch_stdout(raw=True):
+                            user_input = await session.prompt_async(
+                                HTML("<ansiblue><b>\u276f</b></ansiblue> "),
+                                bottom_toolbar=_bottom_toolbar,
+                                refresh_interval=1.0,
+                            )
                         user_input = user_input.strip()
 
                         if not user_input:
@@ -940,7 +1038,6 @@ def cmd_interactive(
 
                         # Special commands
                         if user_input.lower() in ("/exit", "/quit", "/q"):
-                            console.print("[dim]Goodbye![/dim]")
                             state["running"] = False
                             break
 
@@ -964,21 +1061,13 @@ def cmd_interactive(
                                 state["workspace_dir"] = _create_session_workspace(
                                     run_name
                                 )
-                            console.print("[dim]Loading new session...[/dim]")
-                            state["agent"] = _load_agent(
-                                workspace_dir=state["workspace_dir"],
-                                checkpointer=checkpointer,
-                                config=config,
-                            )
                             state["thread_id"] = generate_thread_id()
                             state["resumed"] = False
                             state["status_started_at"] = datetime.now()
                             state["status_last_input_tokens"] = None
+                            # Background agent reload — next message awaits it.
+                            _start_agent_load(checkpointer)
                             await _refresh_status_snapshot(reset_streaming_text=True)
-                            # Sync channel refs so the queue checker uses the new agent
-                            if _channels_is_running():
-                                _ch_mod._cli_agent = state["agent"]
-                                _ch_mod._cli_thread_id = state["thread_id"]
                             console.print(
                                 f"[green]New session:[/green] [yellow]{state['thread_id']}[/yellow]"
                             )
@@ -1000,9 +1089,6 @@ def cmd_interactive(
                                 console.print(
                                     f"[dim]Memory dir:[/dim] [cyan]{_shorten_path(memory_dir)}[/cyan]"
                                 )
-                            console.print(
-                                f"[dim]UI:[/dim] [cyan]{state['ui_backend']}[/cyan]"
-                            )
                             console.print()
                             continue
 
@@ -1035,9 +1121,10 @@ def cmd_interactive(
                                 stop_arg = args[len("stop") :].strip()
                                 _cmd_channel_stop(stop_arg or None)
                             else:
+                                await _await_agent_ready()
                                 _cmd_channel(
                                     args,
-                                    state["agent"],
+                                    agent_loader.agent,
                                     state["thread_id"],
                                     send_thinking=channel_send_thinking,
                                 )
@@ -1050,11 +1137,12 @@ def cmd_interactive(
                                 render_compact_result,
                             )
 
+                            await _await_agent_ready()
                             with console.status(
                                 "[cyan]Compacting conversation...[/cyan]"
                             ):
                                 result = await compact_conversation(
-                                    agent=state["agent"],
+                                    agent=agent_loader.agent,
                                     thread_id=state["thread_id"],
                                     input_tokens_hint=state.get(
                                         "status_last_input_tokens"
@@ -1079,6 +1167,39 @@ def cmd_interactive(
                             )
                             continue
 
+                        if user_input.lower().startswith("/model"):
+                            from ..commands.base import CommandContext
+                            from ..commands.manager import manager as cmd_manager
+                            from ..EvoScientist import _ensure_config
+                            from .rich_command_ui import RichCLICommandUI
+
+                            # /model is ``needs_agent=False`` — it builds its
+                            # own agent — so we don't wait for the current
+                            # load; /model is the way to fix a broken one.
+                            ctx = CommandContext(
+                                agent=None,
+                                thread_id=state["thread_id"],
+                                ui=RichCLICommandUI(console),
+                                workspace_dir=state["workspace_dir"],
+                                checkpointer=checkpointer,
+                            )
+                            await cmd_manager.execute(user_input, ctx)
+
+                            if ctx.agent is not None:
+                                agent_loader.adopt(ctx.agent)
+                                cfg = _ensure_config()
+                                model = cfg.model
+                                state["status_base_snapshot"] = (
+                                    make_empty_status_snapshot(model)
+                                )
+                                await _refresh_status_snapshot(
+                                    reset_streaming_text=True,
+                                )
+                                if _channels_is_running():
+                                    _ch_mod._cli_agent = ctx.agent
+                                    _ch_mod._cli_thread_id = state["thread_id"]
+                            continue
+
                         # Resolve @file mentions — inject file contents inline
                         _, message_to_send, file_warnings = resolve_file_mentions(
                             user_input, state["workspace_dir"]
@@ -1090,13 +1211,14 @@ def cmd_interactive(
                         for w in file_warnings:
                             console.print(f"[yellow]⚠ {escape(w)}[/yellow]")
                         console.print()
+                        ready_agent = await _await_agent_ready()
                         meta = build_metadata(state["workspace_dir"], model)
                         await _refresh_status_snapshot(
                             message_to_send, reset_streaming_text=True
                         )
                         run_streaming(
                             ui_backend=state["ui_backend"],
-                            agent=state["agent"],
+                            agent=ready_agent,
                             message=message_to_send,
                             thread_id=state["thread_id"],
                             show_thinking=show_thinking,
@@ -1110,12 +1232,12 @@ def cmd_interactive(
                         _print_separator()
 
                     except KeyboardInterrupt:
-                        console.print("\n[dim]Goodbye![/dim]")
+                        console.print()
                         state["running"] = False
                         break
                     except EOFError:
                         # Handle Ctrl+D
-                        console.print("\n[dim]Goodbye![/dim]")
+                        console.print()
                         state["running"] = False
                         break
                     except Exception as e:
@@ -1138,12 +1260,31 @@ def cmd_interactive(
                     await queue_task
                 except asyncio.CancelledError:
                     pass
+                # Best-effort: guard so a DB lookup failure here can't
+                # shadow the original exception exiting _async_main_loop.
+                current_tid = state.get("thread_id")
+                if current_tid:
+                    try:
+                        if await thread_exists(current_tid):
+                            state["resume_hint_thread_id"] = current_tid
+                    except Exception:
+                        _channel_logger.debug(
+                            "resume-hint thread_exists lookup failed",
+                            exc_info=True,
+                        )
 
     # Run the async main loop
+    from .resume_hint import print_resume_hint
+
     try:
         asyncio.run(_async_main_loop())
     except KeyboardInterrupt:
-        console.print("\n[dim]Goodbye![/dim]")
+        console.print()
+    finally:
+        try:
+            print_resume_hint(state.get("resume_hint_thread_id"), console=console)
+        except Exception:
+            _channel_logger.debug("print_resume_hint failed", exc_info=True)
 
 
 def cmd_run(

@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections import Counter
 
 import questionary
-from prompt_toolkit.styles import Style as PtStyle
 from questionary import Choice
 
 from ..mcp.registry import (
@@ -21,18 +20,8 @@ from ..mcp.registry import (
     install_mcp_server,
     install_mcp_servers,
 )
-from ..stream.display import console
-
-_PICKER_STYLE = PtStyle.from_dict(
-    {
-        "questionmark": "#888888",
-        "question": "",
-        "pointer": "bold",
-        "highlighted": "bold",
-        "text": "#888888",
-        "answer": "bold",
-    }
-)
+from ..stream.console import console
+from .interactive import _PICKER_STYLE
 
 _INSTALLED_INDICATOR = ("fg:#4caf50", "\u2713 ")
 

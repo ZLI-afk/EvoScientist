@@ -15,7 +15,7 @@ from rich.table import Table
 
 from ..llm.context_window import DEFAULT_CONTEXT_WINDOW_FALLBACK, resolve_context_window
 from ..paths import ensure_dirs, set_workspace_root
-from ..stream.display import console
+from ..stream.console import console
 from ._app import app, channel_app, config_app, mcp_app
 from ._constants import build_metadata
 from .agent import (
@@ -33,7 +33,6 @@ from .channel import (
     channel_ask_user_prompt,
     channel_hitl_prompt,
 )
-from .interactive import cmd_interactive, cmd_run
 from .mcp_ui import (
     _mcp_add_server_from_kwargs,
     _mcp_edit_server_fields,
@@ -41,7 +40,6 @@ from .mcp_ui import (
     _mcp_remove_server,
     _show_mcp_config,
 )
-from .tui_runtime import run_streaming
 
 # =============================================================================
 # Onboard command
@@ -515,6 +513,7 @@ def _serve_process_message(
     import asyncio
 
     from .channel import _bus_loop
+    from .tui_runtime import run_streaming
 
     console.print(
         f"[dim][{msg.channel_type}] {msg.sender}: {escape(msg.content[:80])}[/dim]"
@@ -1088,7 +1087,10 @@ def _main_callback(
         None, "-p", "--prompt", help="Query to execute (single-shot mode)"
     ),
     thread_id: str | None = typer.Option(
-        None, "--thread-id", help="Thread ID for conversation persistence"
+        None,
+        "--resume",
+        "--thread-id",
+        help="Thread ID (or prefix) to resume a previous session.",
     ),
     workdir: str | None = typer.Option(
         None, "--workdir", help="Override workspace directory for this session"
@@ -1278,17 +1280,41 @@ def _main_callback(
         # Single-shot mode: wrap in persistent checkpointer
         import asyncio
 
-        from ..sessions import generate_thread_id, get_checkpointer
+        from ..sessions import (
+            generate_thread_id,
+            get_checkpointer,
+            resolve_thread_id_prefix,
+        )
+        from .interactive import cmd_run
 
         async def _single_shot():
             async with get_checkpointer() as checkpointer:
+                # Resolve resume target first so a bad --resume/--thread-id
+                # exits before the slow _load_agent() provider setup.
+                if thread_id:
+                    resolved, matches = await resolve_thread_id_prefix(thread_id)
+                    if resolved:
+                        tid = resolved
+                    elif matches:
+                        console.print(
+                            f"[yellow]Ambiguous thread ID '{escape(thread_id)}'. Matches:[/yellow]"
+                        )
+                        for s in matches:
+                            console.print(f"  [cyan]{escape(s)}[/cyan]")
+                        raise typer.Exit(1)
+                    else:
+                        console.print(
+                            f"[red]Thread '{escape(thread_id)}' not found.[/red]"
+                        )
+                        raise typer.Exit(1)
+                else:
+                    tid = generate_thread_id()
                 console.print("[dim]Loading agent...[/dim]")
                 agent = _load_agent(
                     workspace_dir=workspace_dir,
                     checkpointer=checkpointer,
                     config=config,
                 )
-                tid = thread_id or generate_thread_id()
                 cmd_run(
                     agent,
                     prompt,
@@ -1304,6 +1330,8 @@ def _main_callback(
         nest_asyncio.apply()
         asyncio.get_event_loop().run_until_complete(_single_shot())
     else:
+        from .interactive import cmd_interactive
+
         # Interactive mode (default) — checkpointer managed inside cmd_interactive
         cmd_interactive(
             show_thinking=show_thinking,

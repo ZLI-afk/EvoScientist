@@ -206,7 +206,7 @@ class TestToolCallWidget(unittest.TestCase):
 
         w = ToolCallWidget("edit_file", {}, "mem-1")
         w._result_content = (
-            "Successfully replaced 1 instance(s) of the string in '/memory/MEMORY.md'"
+            "Successfully replaced 1 instance(s) of the string in '/memories/MEMORY.md'"
         )
 
         class _Header:
@@ -337,6 +337,49 @@ class TestSubAgentWidget(unittest.TestCase):
         # Verify lookup works
         assert "id-1" in sa._tool_widgets
         assert sa._tool_widgets["id-1"] is tw
+
+    def test_complete_tool_routes_by_id_and_dedups(self):
+        """Result delivery must use tool_call_id so concurrent same-name tools
+        don't leave orphans that get marked ``interrupted`` at finalize time.
+        Also, repeat deliveries must not inflate ``_completed_ids``.
+        """
+        from EvoScientist.cli.widgets.subagent_widget import SubAgentWidget
+        from EvoScientist.cli.widgets.tool_call_widget import ToolCallWidget
+
+        class _FakeToolWidget(ToolCallWidget):
+            def set_success(self, content):
+                self._status = "success"
+                self._result_content = content
+
+            def set_error(self, content):
+                self._status = "error"
+                self._result_content = content
+
+        sa = SubAgentWidget("code-agent")
+        sa._update_visibility = lambda: None  # skip mount-dependent render
+
+        tw_a = _FakeToolWidget("execute", {"cmd": "a"}, "id_A")
+        tw_b = _FakeToolWidget("execute", {"cmd": "b"}, "id_B")
+        sa._tool_widgets["id_A"] = tw_a
+        sa._tool_widgets["id_B"] = tw_b
+        sa._running_ids = ["id_A", "id_B"]
+
+        # Out-of-order delivery: result for B arrives first.
+        sa.complete_tool("execute", "out B", True, tool_id="id_B")
+        assert tw_b._status == "success"
+        assert tw_a._status == "running"
+        assert sa._completed_ids == ["id_B"]
+        assert sa._running_ids == ["id_A"]
+
+        # Duplicate delivery for id_B must not inflate counts.
+        sa.complete_tool("execute", "out B dup", True, tool_id="id_B")
+        assert sa._completed_ids == ["id_B"]
+
+        # Now id_A finishes normally.
+        sa.complete_tool("execute", "out A", True, tool_id="id_A")
+        assert tw_a._status == "success"
+        assert sa._completed_ids == ["id_B", "id_A"]
+        assert sa._running_ids == []
 
 
 @unittest.skipUnless(_has_textual, "textual not installed")

@@ -74,6 +74,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("gpt-5.3-codex", "gpt-5.3-codex", "custom-openai"),
     ("gpt-5-mini", "gpt-5-mini", "custom-openai"),
     # Anthropic (ordered by capability)
+    ("claude-opus-4-7", "claude-opus-4-7", "anthropic"),
     ("claude-opus-4-6", "claude-opus-4-6", "anthropic"),
     ("claude-sonnet-4-6", "claude-sonnet-4-6", "anthropic"),
     ("claude-opus-4-5", "claude-opus-4-5", "anthropic"),
@@ -102,7 +103,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("gemini-2.5-flash", "gemini-2.5-flash", "google-genai"),
     ("gemini-2.5-flash-lite", "gemini-2.5-flash-lite", "google-genai"),
     ("gemini-2.5-pro", "gemini-2.5-pro", "google-genai"),
-    # MiniMax (direct API — Anthropic-compatible at api.minimaxi.com)
+    # MiniMax (direct API — Anthropic-compatible; default: api.minimaxi.com, global: api.minimax.io)
     ("minimax-m2.7", "MiniMax-M2.7", "minimax"),
     ("minimax-m2.7-highspeed", "MiniMax-M2.7-highspeed", "minimax"),
     ("minimax-m2.5", "MiniMax-M2.5", "minimax"),
@@ -125,6 +126,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("kimi-k2.5", "Pro/moonshotai/Kimi-K2.5", "siliconflow"),
     ("glm-4.7", "Pro/zai-org/GLM-4.7", "siliconflow"),
     # OpenRouter
+    ("claude-opus-4.7", "anthropic/claude-opus-4.7", "openrouter"),
     ("claude-opus-4.6", "anthropic/claude-opus-4.6", "openrouter"),
     ("claude-sonnet-4.6", "anthropic/claude-sonnet-4.6", "openrouter"),
     ("gpt-5.4", "openai/gpt-5.4", "openrouter"),
@@ -223,7 +225,7 @@ def _apply_auto_config(
             _is_proxy = False
         if _is_proxy or (is_third_party and not _supports_thinking):
             pass
-        elif model_id.endswith("4-6"):
+        elif model_id.endswith(("4-6", "4-7")):
             kwargs["thinking"] = {"type": "adaptive"}
             kwargs.setdefault("effort", "max")
         else:
@@ -350,14 +352,6 @@ def get_chat_model(
                     "OpenAI-compatible API endpoint URL (e.g. https://api.openai.com/v1)."
                 )
             base_url = base_url.rstrip("/")
-            _headers_json = os.environ.get("CUSTOM_OPENAI_HEADERS", "")
-            if _headers_json:
-                import json as _json
-                import httpx as _httpx
-                _custom_headers = _json.loads(_headers_json)
-                kwargs["default_headers"] = _custom_headers
-                kwargs["http_client"] = _httpx.Client(headers=_custom_headers)
-                kwargs["http_async_client"] = _httpx.AsyncClient(headers=_custom_headers)
         else:
             base_url = base_url_default
         if base_url:
@@ -400,11 +394,8 @@ def get_chat_model(
                     "Anthropic-compatible API endpoint URL (e.g. https://api.anthropic.com)."
                 )
             base_url = base_url.rstrip("/")
-            _headers_json = os.environ.get("CUSTOM_ANTHROPIC_HEADERS", "")
-            if _headers_json:
-                import json as _json
-                _custom_headers = _json.loads(_headers_json)
-                kwargs["default_headers"] = _custom_headers
+        elif provider == "minimax":
+            base_url = os.environ.get("MINIMAX_BASE_URL", base_url_default).rstrip("/")
         else:
             base_url = base_url_default
         if base_url:
@@ -467,6 +458,22 @@ def list_models() -> list[str]:
         if name not in seen:
             seen.add(name)
             result.append(name)
+    return result
+
+
+def list_models_by_provider() -> list[tuple[str, str, str]]:
+    """List all unique (short_name, model_id, provider) entries.
+
+    Returns:
+        De-duplicated list of model entries preserving registry order.
+    """
+    seen: set[tuple[str, str]] = set()
+    result: list[tuple[str, str, str]] = []
+    for name, model_id, provider in _MODEL_ENTRIES:
+        key = (name, provider)
+        if key not in seen:
+            seen.add(key)
+            result.append((name, model_id, provider))
     return result
 
 

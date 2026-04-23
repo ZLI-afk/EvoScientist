@@ -54,6 +54,13 @@ class TestStreamEventEmitter:
         )
         assert ev.type == "subagent_tool_result"
         assert ev.data["subagent"] == "research-agent"
+        assert ev.data["id"] == ""  # default when caller omits tool_call_id
+
+    def test_subagent_tool_result_with_id(self):
+        ev = StreamEventEmitter.subagent_tool_result(
+            "research-agent", "execute", "ok", True, tool_call_id="tc_xyz"
+        )
+        assert ev.data["id"] == "tc_xyz"
 
     def test_subagent_end(self):
         ev = StreamEventEmitter.subagent_end("research-agent")

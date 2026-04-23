@@ -49,17 +49,13 @@ class CurrentCommand(Command):
                 f"Workspace: {_shorten_path(ctx.workspace_dir)}",
                 style="dim",
             )
-        memory_path = paths.MEMORY_DIR
+        memory_path = paths.MEMORIES_DIR
         if memory_path:
             from ...cli.agent import _shorten_path
 
             ctx.ui.append_system(
                 f"Memory dir: {_shorten_path(str(memory_path))}", style="dim"
             )
-        # How to determine UI type here?
-        # Maybe ctx.ui has a name or we pass it in ctx.
-        # For now, let's keep it simple.
-        ctx.ui.append_system("UI: auto", style="dim")
 
 
 # Register commands
