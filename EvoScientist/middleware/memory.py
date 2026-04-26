@@ -31,6 +31,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from langchain.agents.middleware.types import (
@@ -153,7 +154,9 @@ Rules:
 # System-prompt snippet injected every turn
 # ---------------------------------------------------------------------------
 
-MEMORY_INJECTION_TEMPLATE = """<evo_memory>
+MEMORY_INJECTION_TEMPLATE = """Today's date is {date}.
+
+<evo_memory>
 {memory_content}
 </evo_memory>
 
@@ -355,8 +358,6 @@ def _merge_memory(existing_md: str, extracted: dict[str, Any]) -> str:
     exp = extracted.get("experiment_conclusion")
     should_add_exp = bool(exp and isinstance(exp, dict) and exp.get("title"))
     if should_add_exp:
-        from datetime import datetime
-
         date_str = datetime.now().strftime("%Y-%m-%d")
         title = str(exp.get("title", "Untitled")).strip()
         entry = f"\n### [{date_str}] {title}\n"
@@ -691,7 +692,10 @@ class EvoMemoryMiddleware(AgentMiddleware):
 
         from deepagents.middleware._utils import append_to_system_message
 
-        injection = MEMORY_INJECTION_TEMPLATE.format(memory_content=memory_content)
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        injection = MEMORY_INJECTION_TEMPLATE.format(
+            memory_content=memory_content, date=date_str
+        )
         new_system = append_to_system_message(request.system_message, injection)
         return request.override(system_message=new_system)
 
