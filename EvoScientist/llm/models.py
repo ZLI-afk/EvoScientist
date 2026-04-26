@@ -71,6 +71,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-haiku-4-5", "claude-haiku-4-5", "custom-anthropic"),
     # Custom OpenAI (third-party OpenAI-compatible endpoints, 3 defaults)
     # Listed BEFORE native openai so MODELS dict defaults to native provider
+    ("gpt-5.5-pro", "gpt-5.5-pro", "custom-openai"),
     ("gpt-5.5", "gpt-5.5", "custom-openai"),
     ("gpt-5.4", "gpt-5.4", "custom-openai"),
     ("gpt-5.3-codex", "gpt-5.3-codex", "custom-openai"),
@@ -83,6 +84,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-sonnet-4-5", "claude-sonnet-4-5", "anthropic"),
     ("claude-haiku-4-5", "claude-haiku-4-5", "anthropic"),
     # OpenAI
+    ("gpt-5.5-pro", "gpt-5.5-pro", "openai"),
     ("gpt-5.5", "gpt-5.5", "openai"),
     ("gpt-5.4", "gpt-5.4", "openai"),
     ("gpt-5.4-mini", "gpt-5.4-mini", "openai"),
@@ -132,15 +134,17 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-opus-4.7", "anthropic/claude-opus-4.7", "openrouter"),
     ("claude-opus-4.6", "anthropic/claude-opus-4.6", "openrouter"),
     ("claude-sonnet-4.6", "anthropic/claude-sonnet-4.6", "openrouter"),
+    ("gpt-5.5-pro", "openai/gpt-5.5-pro", "openrouter"),
     ("gpt-5.5", "openai/gpt-5.5", "openrouter"),
     ("gpt-5.4", "openai/gpt-5.4", "openrouter"),
     ("gpt-5.3-codex", "openai/gpt-5.3-codex", "openrouter"),
     ("gemini-3.1-pro", "google/gemini-3.1-pro-preview", "openrouter"),
     ("gemini-3-flash", "google/gemini-3-flash-preview", "openrouter"),
-    ("kimi-k2.5", "moonshotai/kimi-k2.5", "openrouter"),
+    ("kimi-k2.6", "moonshotai/kimi-k2.6", "openrouter"),
     ("glm-5v-turbo", "z-ai/glm-5v-turbo", "openrouter"),
     ("minimax-m2.7", "minimax/minimax-m2.7", "openrouter"),
-    ("mimo-v2-pro", "xiaomi/mimo-v2-pro", "openrouter"),
+    ("mimo-v2.5-pro", "xiaomi/mimo-v2.5-pro", "openrouter"),
+    ("mimo-v2.5", "xiaomi/mimo-v2.5", "openrouter"),
     ("grok-4.1-fast", "x-ai/grok-4.1-fast", "openrouter"),
     ("qwen3.5-122b", "qwen/qwen3.5-122b-a10b", "openrouter"),
     ("deepseek-v4-pro", "deepseek/deepseek-v4-pro", "openrouter"),
@@ -177,6 +181,7 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("deepseek-r1", "deepseek-reasoner", "deepseek"),
     ("deepseek-v3", "deepseek-chat", "deepseek"),
     # Moonshot (OpenAI-compatible)
+    ("kimi-k2.6", "kimi-k2.6", "moonshot"),
     ("kimi-k2.5", "kimi-k2.5", "moonshot"),
     ("kimi-k2-thinking", "kimi-k2-thinking", "moonshot"),
     ("kimi-k2-thinking-turbo", "kimi-k2-thinking-turbo", "moonshot"),
