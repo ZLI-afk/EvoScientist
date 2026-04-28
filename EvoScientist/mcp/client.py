@@ -560,6 +560,8 @@ def _build_connections(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
             merged = {**forwarded, **user_env}
             if merged:
                 conn["env"] = merged
+            if cwd := server.get("cwd"):
+                conn["cwd"] = cwd
             connections[name] = conn
 
         elif transport in _URL_TRANSPORTS:
