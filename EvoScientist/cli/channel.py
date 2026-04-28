@@ -15,11 +15,11 @@ import queue
 import threading
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 
 from ..stream.console import console
@@ -59,6 +59,10 @@ _response_lock = threading.Lock()
 _RESPONSE_TIMEOUT = 600.0
 _LATE_RESPONSE_TIMEOUT = 86400.0
 _LATE_RESPONSE_NOTICE = "Still working on it. I'll send the result when it's ready."
+_channel_request_lock = threading.Lock()
+_channel_requests: dict[str, dict[str, str]] = {}
+_session_requests: dict[str, list[str]] = {}
+_cancelled_channel_messages: set[str] = set()
 
 
 def _enqueue_channel_message(msg: ChannelMessage) -> asyncio.Future[str]:
@@ -71,6 +75,7 @@ def _enqueue_channel_message(msg: ChannelMessage) -> asyncio.Future[str]:
             "loop": loop,
             "response": None,
         }
+    _register_channel_request(msg)
     _message_queue.put(msg)
     return future
 
@@ -106,6 +111,319 @@ def _pop_channel_response(msg_id: str, *, cancel_pending: bool = False) -> str |
     return slot["response"]
 
 
+def _channel_session_key(channel_type: str, chat_id: str) -> str:
+    return f"{channel_type}:{chat_id}"
+
+
+def _channel_message_session_key(msg: ChannelMessage) -> str:
+    return _channel_session_key(msg.channel_type, msg.chat_id)
+
+
+def _channel_message_cancel_scope(msg: ChannelMessage) -> str:
+    return f"channel:{msg.channel_type}:{msg.chat_id}:{msg.msg_id}"
+
+
+def _register_channel_request(msg: ChannelMessage) -> None:
+    """Track a queued channel request so `/stop` can find it later."""
+    session_key = _channel_message_session_key(msg)
+    with _channel_request_lock:
+        _channel_requests[msg.msg_id] = {
+            "session_key": session_key,
+            "cancel_scope": _channel_message_cancel_scope(msg),
+            "state": "queued",
+        }
+        _session_requests.setdefault(session_key, []).append(msg.msg_id)
+
+
+def _claim_channel_request(msg: ChannelMessage) -> bool:
+    """Mark a queued request active. Returns False if it was cancelled first."""
+    with _channel_request_lock:
+        slot = _channel_requests.get(msg.msg_id)
+        if slot is None or msg.msg_id in _cancelled_channel_messages:
+            return False
+        slot["state"] = "active"
+        return True
+
+
+def _claim_or_complete_channel_request(msg: ChannelMessage) -> bool:
+    """Claim a request, or clean it up if `/stop` cancelled it while queued."""
+    if _claim_channel_request(msg):
+        return True
+    _complete_channel_request(msg.msg_id)
+    return False
+
+
+def _channel_request_state(msg_id: str) -> str | None:
+    with _channel_request_lock:
+        slot = _channel_requests.get(msg_id)
+        return slot.get("state") if slot is not None else None
+
+
+def _complete_channel_request(
+    msg_id: str,
+    *,
+    discard_cancel_scope: bool = True,
+) -> None:
+    """Forget a request once its waiter is resolved or cancelled."""
+    with _channel_request_lock:
+        slot = _channel_requests.pop(msg_id, None)
+        _cancelled_channel_messages.discard(msg_id)
+        if slot is not None:
+            request_ids = _session_requests.get(slot["session_key"])
+            if request_ids:
+                try:
+                    request_ids.remove(msg_id)
+                except ValueError:
+                    pass
+                if not request_ids:
+                    _session_requests.pop(slot["session_key"], None)
+
+    if slot is not None and discard_cancel_scope:
+        from ..stream.display import discard_stream_cancel
+
+        discard_stream_cancel(slot["cancel_scope"])
+
+
+def _cancel_channel_session(channel_type: str, chat_id: str) -> tuple[int, int]:
+    """Cancel queued and active work for one channel chat session."""
+    session_key = _channel_session_key(channel_type, chat_id)
+    with _channel_request_lock:
+        request_ids: list[str] = []
+        cancelled_ids: list[str] = []
+        active_scopes: list[str] = []
+        with _response_lock:
+            for msg_id in tuple(_session_requests.get(session_key, ())):
+                request_slot = _channel_requests.get(msg_id)
+                if request_slot is None:
+                    continue
+                response_slot = _pending_responses.get(msg_id)
+                response_resolved = False
+                if response_slot is not None:
+                    future = response_slot["future"]
+                    # Once a response is already resolved, leave the slot alone
+                    # so the bus waiter can still publish it instead of falling
+                    # back to "No response".
+                    response_resolved = (
+                        response_slot.get("response") is not None or future.done()
+                    )
+                    if not response_resolved:
+                        request_ids.append(msg_id)
+
+                should_cancel = False
+                if response_slot is None:
+                    should_cancel = request_slot.get("state") == "active"
+                else:
+                    should_cancel = not response_resolved
+
+                if should_cancel:
+                    cancelled_ids.append(msg_id)
+                if request_slot.get("state") == "active" and should_cancel:
+                    active_scopes.append(request_slot["cancel_scope"])
+        _cancelled_channel_messages.update(cancelled_ids)
+
+    for msg_id in request_ids:
+        _pop_channel_response(msg_id, cancel_pending=True)
+
+    if active_scopes:
+        from ..stream.display import request_stream_cancel
+
+        for cancel_scope in active_scopes:
+            request_stream_cancel(cancel_scope)
+
+    return len(request_ids), len(active_scopes)
+
+
+# ---------------------------------------------------------------------------
+# Slash command dispatch for channel messages
+# ---------------------------------------------------------------------------
+# Shared by all three UI surfaces that accept inbound channel messages:
+# Rich CLI (``cli/interactive.py::_process_channel_message``), Textual
+# TUI (``cli/tui_interactive.py``'s channel handler), and headless
+# serve (``cli/commands.py::_serve_process_message``).  They all route
+# ``/foo`` text through ``cmd_manager`` instead of feeding it to the
+# LLM as a plain prompt.
+
+
+async def dispatch_channel_slash_command(
+    msg: ChannelMessage,
+    *,
+    agent: Any,
+    thread_id: str,
+    workspace_dir: str | None,
+    checkpointer: Any,
+    append_system: Callable[[str, str], None],
+    start_new_session_cb: Callable[[], None] | None = None,
+    handle_session_resume_cb: Callable[..., Awaitable[None]] | None = None,
+    await_agent_ready: Callable[[], Awaitable[Any]] | None = None,
+    on_cmd_completed: Callable[..., Awaitable[None]] | None = None,
+) -> bool:
+    """Dispatch a slash command from a channel message.
+
+    Returns True if the helper handled the message (successfully or with
+    an error) — the caller must then return without streaming anything
+    to the agent.  Returns False for non-slash content or unresolved
+    slash commands, so the caller can fall through to the agent
+    streaming path (matches TUI behavior).
+
+    Parameters
+    ----------
+    msg:
+        The inbound ``ChannelMessage`` to inspect.
+    agent:
+        Default agent handle for the ``CommandContext``.  Commands that
+        do not need the agent use this value directly.
+    thread_id, workspace_dir, checkpointer:
+        Populate ``CommandContext``.
+    append_system:
+        ``(text, style)`` callback for local CLI/TUI log output.  Used
+        by ``ChannelCommandUI`` to surface system breadcrumbs and by
+        this helper to print the "Executed command from ..." line.
+    start_new_session_cb, handle_session_resume_cb:
+        Optional lifecycle callbacks forwarded to ``ChannelCommandUI``.
+        Headless serve passes ``None`` — ``/new`` and ``/resume`` degrade
+        gracefully via the default ``ChannelCommandUI`` messages.
+    await_agent_ready:
+        Optional async resolver that blocks until the background agent
+        load finishes.  Called only when ``cmd.needs_agent(args)`` is
+        True.  Headless serve passes ``None`` because the agent is
+        loaded up-front before the bus starts.
+    on_cmd_completed:
+        Optional ``async (ctx, original_agent, cmd) -> None`` callback
+        fired only after ``cmd_manager.execute`` returns True.  The
+        ``original_agent`` argument is the agent handle command execution
+        started against: ``agent_for_ctx`` after any ``await_agent_ready``
+        resolution, or the dispatcher's input agent when no resolver is
+        supplied.  Callers can compare ``ctx.agent`` with
+        ``original_agent`` to detect command-driven swaps.  Used by Rich
+        CLI to (a) adopt an agent swap (``/model``) back into the
+        running session and (b) refresh the status snapshot for
+        commands that mutate session-level state (``/new``,
+        ``/compact``) — mirrors the REPL dispatch at
+        ``cli/interactive.py:1002-1030``.  Headless serve passes
+        ``None`` since it cannot hot-swap its polling-loop agent.
+    """
+    if not msg.content.strip().startswith("/"):
+        return False
+
+    try:
+        return await _dispatch_channel_slash_impl(
+            msg,
+            agent=agent,
+            thread_id=thread_id,
+            workspace_dir=workspace_dir,
+            checkpointer=checkpointer,
+            append_system=append_system,
+            start_new_session_cb=start_new_session_cb,
+            handle_session_resume_cb=handle_session_resume_cb,
+            await_agent_ready=await_agent_ready,
+            on_cmd_completed=on_cmd_completed,
+        )
+    except Exception as exc:
+        # Last-ditch safety: any uncaught exception from inside the
+        # dispatch pipeline (lazy import failure, ChannelCommandUI
+        # construction, terminal I/O from ``append_system``, bus
+        # publish races, ...) must not take down the caller's polling
+        # loop — a crashed serve / dead channel queue task is worse
+        # than one failed command.
+        _channel_logger.exception(
+            "Unexpected slash dispatch failure for %s (msg=%s)",
+            msg.channel_type,
+            msg.msg_id,
+        )
+        try:
+            _set_channel_response(msg.msg_id, f"Command error: {exc}")
+        except Exception:  # pragma: no cover — defensive
+            pass
+        # Return True so the caller treats the message as handled and
+        # does not fall through to the agent streaming path.
+        return True
+
+
+async def _dispatch_channel_slash_impl(
+    msg: ChannelMessage,
+    *,
+    agent: Any,
+    thread_id: str,
+    workspace_dir: str | None,
+    checkpointer: Any,
+    append_system: Callable[[str, str], None],
+    start_new_session_cb: Callable[[], None] | None,
+    handle_session_resume_cb: Callable[..., Awaitable[None]] | None,
+    await_agent_ready: Callable[[], Awaitable[Any]] | None,
+    on_cmd_completed: Callable[..., Awaitable[None]] | None,
+) -> bool:
+    """Inner body of ``dispatch_channel_slash_command``.
+
+    Split from the public wrapper so the wrapper can guard with a
+    top-level try/except without visually obscuring the main flow.
+    """
+    # Lazy imports: avoid coupling the channel module to ``commands`` at
+    # import time (tui_interactive.py does the same).
+    from ..commands.base import CommandContext
+    from ..commands.channel_ui import ChannelCommandUI
+    from ..commands.manager import manager as cmd_manager
+
+    parsed = cmd_manager.resolve(msg.content)
+    if parsed is None:
+        # Unknown slash command — let the agent handle it (matches TUI).
+        return False
+    cmd, cmd_args = parsed
+
+    agent_for_ctx = agent
+    if cmd.needs_agent(cmd_args) and await_agent_ready is not None:
+        try:
+            agent_for_ctx = await await_agent_ready()
+        except Exception as exc:
+            _set_channel_response(msg.msg_id, f"Command error: {exc}")
+            return True
+
+    ui = ChannelCommandUI(
+        msg,
+        append_system_callback=append_system,
+        start_new_session_callback=start_new_session_cb,
+        handle_session_resume_callback=handle_session_resume_cb,
+    )
+    ctx = CommandContext(
+        agent=agent_for_ctx,
+        thread_id=thread_id,
+        ui=ui,
+        workspace_dir=workspace_dir,
+        checkpointer=checkpointer,
+    )
+
+    try:
+        cmd_executed = await cmd_manager.execute(msg.content, ctx)
+    except Exception as exc:
+        _channel_logger.debug(f"Channel command error: {exc}", exc_info=True)
+        _set_channel_response(msg.msg_id, f"Command error: {exc}")
+        return True  # must return — do NOT fall through to the agent
+
+    if cmd_executed:
+        if on_cmd_completed is not None:
+            try:
+                # Command output already flushed by ``cmd_manager.execute``
+                # via ``ctx.ui.flush()`` — the hook does internal state
+                # sync (agent adoption, status snapshot refresh) only,
+                # so swallowing its errors keeps the user-visible reply
+                # intact even if the sync path is broken.
+                await on_cmd_completed(ctx, agent_for_ctx, cmd)
+            except Exception as exc:
+                _channel_logger.debug(
+                    f"Channel command post-exec callback error: {exc}",
+                    exc_info=True,
+                )
+        append_system(
+            f"[{msg.channel_type}: Executed command from {msg.sender}]",
+            "dim",
+        )
+        _set_channel_response(msg.msg_id, f"Command executed: {msg.content}")
+        return True
+
+    # ``cmd_manager.execute`` returned False (empty / unparseable input).
+    # Fall through to the agent streaming path.
+    return False
+
+
 # ---------------------------------------------------------------------------
 # HITL approval intercept: bus thread ⇄ main CLI thread
 # ---------------------------------------------------------------------------
@@ -121,6 +439,12 @@ _HITL_APPROVAL_TIMEOUT = 120.0  # seconds to wait for HITL approval reply
 _ASK_USER_TIMEOUT = (
     300.0  # seconds to wait for ask_user reply (longer for thinking time)
 )
+_STOP_COMMANDS = frozenset(("/stop", "/cancel"))
+
+
+def _is_stop_command(content: str | None) -> bool:
+    """Whether incoming content is a stop/cancel slash command."""
+    return (content or "").strip().lower() in _STOP_COMMANDS
 
 
 def _register_hitl_wait(channel_type: str, chat_id: str) -> threading.Event:
@@ -243,6 +567,8 @@ def channel_ask_user_prompt(
             return {"status": "cancelled"}
 
         raw = reply_text.strip()
+        if _is_stop_command(raw):
+            return {"status": "cancelled"}
         if raw.lower() == "cancel":
             return {"status": "cancelled"}
 
@@ -259,6 +585,8 @@ def channel_ask_user_prompt(
                 other_text = _pop_hitl_reply(msg.channel_type, msg.chat_id)
                 if not replied or not other_text:
                     _send("\u23f0 Response timed out.")
+                    return {"status": "cancelled"}
+                if _is_stop_command(other_text):
                     return {"status": "cancelled"}
                 if other_text.strip().lower() == "cancel":
                     return {"status": "cancelled"}
@@ -335,6 +663,12 @@ def channel_hitl_prompt(
 
     if not replied or not reply_text:
         _send("\u23f0 Approval timed out. Action rejected.")
+        return None
+
+    if _is_stop_command(reply_text):
+        # `/stop` already got its own immediate ack from the bus fast-path.
+        # Treat it as a pure cancel signal here so we don't send a second,
+        # contradictory "Unrecognized reply" message.
         return None
 
     # 3. Parse decision
@@ -533,6 +867,20 @@ async def _bus_inbound_consumer(bus, manager) -> None:
             except asyncio.CancelledError:
                 break
 
+            # /stop should preempt HITL interception so cancel works while
+            # waiting for approvals/questions.  If a HITL wait is pending,
+            # still release it so the blocking prompt can unwind immediately.
+            if _is_stop_command(msg.content):
+                if _try_set_hitl_reply(msg.channel, msg.chat_id, msg.content):
+                    _channel_logger.info(
+                        f"[bus] stop request released HITL wait for "
+                        f"{msg.channel}:{msg.chat_id}"
+                    )
+                _task = asyncio.create_task(_handle_bus_message(bus, manager, msg))
+                _tasks.add(_task)
+                _task.add_done_callback(_tasks.discard)
+                continue
+
             # Check if this message is a HITL approval reply
             if _try_set_hitl_reply(msg.channel, msg.chat_id, msg.content):
                 _channel_logger.info(
@@ -560,6 +908,37 @@ async def _handle_bus_message(bus, manager, msg) -> None:
         f"[bus] Received from {msg.channel}:{msg.sender_id}: {msg.content[:60]}..."
     )
     manager.record_message(msg.channel, "received")
+
+    # Fast-path: /stop intercept. Handle on the bus task itself so we
+    # don't deadlock behind the main-thread stream we're trying to
+    # interrupt. No typing indicator, no queue entry.
+    if _is_stop_command(msg.content):
+        cancelled_count, active_count = _cancel_channel_session(
+            msg.channel, msg.chat_id
+        )
+        try:
+            await bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Stopped.",
+                    reply_to=msg.message_id or None,
+                    metadata=msg.metadata,
+                )
+            )
+            manager.record_message(msg.channel, "sent")
+        except Exception as e:
+            _channel_logger.error(f"[bus] /stop ack send error: {e}")
+        else:
+            if cancelled_count or active_count:
+                _channel_logger.info(
+                    "[bus] /stop cancelled %d request(s) (%d active) for %s:%s",
+                    cancelled_count,
+                    active_count,
+                    msg.channel,
+                    msg.chat_id,
+                )
+        return
 
     channel = manager.get_channel(msg.channel)
     typing_active = False
@@ -630,6 +1009,8 @@ async def _handle_bus_message(bus, manager, msg) -> None:
                     f"for {cm.msg_id}"
                 )
                 _pop_channel_response(cm.msg_id, cancel_pending=True)
+                if _channel_request_state(cm.msg_id) != "active":
+                    _complete_channel_request(cm.msg_id)
                 return
 
         response = _pop_channel_response(cm.msg_id) or "No response"
@@ -645,6 +1026,8 @@ async def _handle_bus_message(bus, manager, msg) -> None:
         manager.record_message(msg.channel, "sent")
     except asyncio.CancelledError:
         _pop_channel_response(cm.msg_id, cancel_pending=True)
+        if _channel_request_state(cm.msg_id) != "active":
+            _complete_channel_request(cm.msg_id)
         raise
     except Exception as e:
         _channel_logger.error(f"[bus] Outbound error: {e}")
@@ -680,125 +1063,6 @@ def _print_channel_panel(channels: list[tuple[str, bool, str]]) -> None:
         Panel(body, title="[bold]Channels[/bold]", border_style=border, expand=False)
     )
     console.print()
-
-
-def _cmd_channel(
-    args: str,
-    agent: Any,
-    thread_id: str,
-    *,
-    send_thinking: bool | None = None,
-) -> None:
-    """Start a channel in background using bus mode.
-
-    Usage:
-        /channel [telegram|discord|imessage]  -- start channel (default from config)
-        /channel status                       -- show current channel status
-        /channel stop                         -- stop running channel
-    """
-    global _cli_agent, _cli_thread_id
-
-    from ..config import load_config
-
-    app_config = load_config()
-
-    channel_type = args.strip().lower() if args and args.strip() else ""
-    if channel_type == "status":
-        running = _channels_running_list()
-        if running and _manager:
-            detailed = _manager.get_detailed_status()
-            table = Table(title="Channel Status", show_header=True, expand=False)
-            table.add_column("Channel", style="cyan")
-            table.add_column("Status")
-            table.add_column("Uptime", style="dim")
-            table.add_column("Rx", justify="right")
-            table.add_column("Tx", justify="right")
-            for ch_name in running:
-                info = detailed.get(ch_name, {})
-                secs = info.get("uptime_seconds", 0)
-                mins, s = divmod(int(secs), 60)
-                hours, mins = divmod(mins, 60)
-                uptime = f"{hours}h{mins:02d}m" if hours else f"{mins}m{s:02d}s"
-                rx = str(info.get("received", 0))
-                tx = str(info.get("sent", 0))
-                table.add_row(ch_name, "[green]running[/green]", uptime, rx, tx)
-            console.print(table)
-            console.print()
-        else:
-            console.print("[dim]No channel running[/dim]\n")
-        return
-
-    if not channel_type:
-        channel_type = app_config.channel_enabled
-    if not channel_type:
-        console.print("[yellow]No channel configured.[/yellow]")
-        console.print(
-            "[dim]Run[/dim] evosci onboard [dim]or specify:[/dim] /channel telegram\n"
-        )
-        return
-
-    requested = [t.strip() for t in channel_type.split(",") if t.strip()]
-
-    if _channels_is_running():
-        running = _channels_running_list()
-        results: list[tuple[str, bool, str]] = []
-        for ct in requested:
-            if ct in running:
-                results.append((ct, True, "already running"))
-            else:
-                try:
-                    _add_channel_to_running_bus(
-                        ct,
-                        app_config,
-                        send_thinking=send_thinking,
-                    )
-                    results.append((ct, True, "connected (bus)"))
-                except Exception as e:
-                    results.append((ct, False, str(e)))
-        _print_channel_panel(results)
-        return
-
-    _cli_agent = agent
-    _cli_thread_id = thread_id
-
-    # Override channel_enabled for this invocation
-    original = app_config.channel_enabled
-    app_config.channel_enabled = channel_type
-    try:
-        _start_channels_bus_mode(
-            app_config,
-            agent,
-            thread_id,
-            send_thinking=send_thinking,
-        )
-        results = [(ct, True, "connected (bus)") for ct in requested]
-    except Exception as e:
-        results = [(ct, False, str(e)) for ct in requested]
-    finally:
-        app_config.channel_enabled = original
-
-    _print_channel_panel(results)
-
-
-def _cmd_channel_stop(channel_type: str | None = None) -> None:
-    """Stop background channel(s).
-
-    Args:
-        channel_type: Specific channel to stop, or None to stop all.
-    """
-    if not _channels_is_running():
-        console.print("[dim]No channel running[/dim]\n")
-        return
-    if channel_type:
-        if not _channels_is_running(channel_type):
-            console.print(f"[dim]{channel_type} is not running[/dim]\n")
-            return
-        _channels_stop(channel_type)
-        console.print(f"[dim]{channel_type} stopped[/dim]\n")
-    else:
-        running = _channels_running_list()
-        _channels_stop()
-        console.print(f"[dim]{', '.join(running)} stopped[/dim]\n")
 
 
 def _auto_start_channel(

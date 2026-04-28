@@ -14,9 +14,11 @@ from typing import Any
 
 from langchain.chat_models import init_chat_model
 
+from .context_window import apply_known_context_window
 from .patches import (
     _is_ccproxy_codex,
     _patch_ccproxy_system_to_developer,
+    _patch_deepseek_reasoning_passback,
     _patch_openai_compat_content,
     _patch_openrouter_reasoning_details,
 )
@@ -70,6 +72,8 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-haiku-4-5", "claude-haiku-4-5", "custom-anthropic"),
     # Custom OpenAI (third-party OpenAI-compatible endpoints, 3 defaults)
     # Listed BEFORE native openai so MODELS dict defaults to native provider
+    ("gpt-5.5-pro", "gpt-5.5-pro", "custom-openai"),
+    ("gpt-5.5", "gpt-5.5", "custom-openai"),
     ("gpt-5.4", "gpt-5.4", "custom-openai"),
     ("gpt-5.3-codex", "gpt-5.3-codex", "custom-openai"),
     ("gpt-5-mini", "gpt-5-mini", "custom-openai"),
@@ -81,6 +85,8 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-sonnet-4-5", "claude-sonnet-4-5", "anthropic"),
     ("claude-haiku-4-5", "claude-haiku-4-5", "anthropic"),
     # OpenAI
+    ("gpt-5.5-pro", "gpt-5.5-pro", "openai"),
+    ("gpt-5.5", "gpt-5.5", "openai"),
     ("gpt-5.4", "gpt-5.4", "openai"),
     ("gpt-5.4-mini", "gpt-5.4-mini", "openai"),
     ("gpt-5.4-nano", "gpt-5.4-nano", "openai"),
@@ -129,16 +135,21 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("claude-opus-4.7", "anthropic/claude-opus-4.7", "openrouter"),
     ("claude-opus-4.6", "anthropic/claude-opus-4.6", "openrouter"),
     ("claude-sonnet-4.6", "anthropic/claude-sonnet-4.6", "openrouter"),
+    ("gpt-5.5-pro", "openai/gpt-5.5-pro", "openrouter"),
+    ("gpt-5.5", "openai/gpt-5.5", "openrouter"),
     ("gpt-5.4", "openai/gpt-5.4", "openrouter"),
     ("gpt-5.3-codex", "openai/gpt-5.3-codex", "openrouter"),
     ("gemini-3.1-pro", "google/gemini-3.1-pro-preview", "openrouter"),
     ("gemini-3-flash", "google/gemini-3-flash-preview", "openrouter"),
-    ("kimi-k2.5", "moonshotai/kimi-k2.5", "openrouter"),
+    ("kimi-k2.6", "moonshotai/kimi-k2.6", "openrouter"),
     ("glm-5v-turbo", "z-ai/glm-5v-turbo", "openrouter"),
     ("minimax-m2.7", "minimax/minimax-m2.7", "openrouter"),
-    ("mimo-v2-pro", "xiaomi/mimo-v2-pro", "openrouter"),
+    ("mimo-v2.5-pro", "xiaomi/mimo-v2.5-pro", "openrouter"),
+    ("mimo-v2.5", "xiaomi/mimo-v2.5", "openrouter"),
     ("grok-4.1-fast", "x-ai/grok-4.1-fast", "openrouter"),
     ("qwen3.5-122b", "qwen/qwen3.5-122b-a10b", "openrouter"),
+    ("deepseek-v4-pro", "deepseek/deepseek-v4-pro", "openrouter"),
+    ("deepseek-v4-flash", "deepseek/deepseek-v4-flash", "openrouter"),
     # Zhipu CodePlan (智谱代码计划 — coding-only endpoint)
     ("glm-5.1", "glm-5.1", "zhipu-code"),
     ("glm-5", "glm-5", "zhipu-code"),
@@ -165,9 +176,13 @@ _MODEL_ENTRIES: list[tuple[str, str, str]] = [
     ("qwen-max", "qwen-max", "dashscope"),
     ("qwq-plus", "qwq-plus", "dashscope"),
     # DeepSeek
+    ("deepseek-v4-pro", "deepseek-v4-pro", "deepseek"),
+    ("deepseek-v4-flash", "deepseek-v4-flash", "deepseek"),
+    # Legacy aliases (deprecated 2026-07-24; route to v4-flash thinking/non-thinking)
     ("deepseek-r1", "deepseek-reasoner", "deepseek"),
     ("deepseek-v3", "deepseek-chat", "deepseek"),
     # Moonshot (OpenAI-compatible)
+    ("kimi-k2.6", "kimi-k2.6", "moonshot"),
     ("kimi-k2.5", "kimi-k2.5", "moonshot"),
     ("kimi-k2-thinking", "kimi-k2-thinking", "moonshot"),
     ("kimi-k2-thinking-turbo", "kimi-k2-thinking-turbo", "moonshot"),
@@ -237,7 +252,11 @@ def _apply_auto_config(
             # ccproxy uses Chat Completions which doesn't support reasoning.
             pass
         else:
-            _eff = "xhigh" if ("5.4" in model_id or "codex" in model_id) else "high"
+            _eff = (
+                "xhigh"
+                if ("5.4" in model_id or "5.5" in model_id or "codex" in model_id)
+                else "high"
+            )
             kwargs["reasoning"] = {"effort": _eff, "summary": "auto"}
 
     # Google GenAI: surface thinking traces
@@ -440,8 +459,15 @@ def get_chat_model(
     ) and _original_provider not in _no_patch_providers:
         _patch_openai_compat_content(chat_model)
 
+    # DeepSeek thinking mode requires reasoning_content passback in multi-turn
+    # + tool_use scenarios.
+    if _original_provider == "deepseek":
+        _patch_deepseek_reasoning_passback(chat_model)
+
     if _is_openai_proxy:
         _patch_ccproxy_system_to_developer(chat_model)
+
+    apply_known_context_window(chat_model)
 
     return chat_model
 

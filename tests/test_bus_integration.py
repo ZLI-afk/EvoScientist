@@ -30,14 +30,29 @@ def clean_channel_state():
     """Reset shared channel bridge state before and after each test."""
     from EvoScientist.cli import channel as channel_mod
     from EvoScientist.cli.channel import _message_queue
+    from EvoScientist.stream import display as display_mod
 
-    _drain_queue(_message_queue)
-    with channel_mod._response_lock:
-        channel_mod._pending_responses.clear()
+    def _reset() -> None:
+        _drain_queue(_message_queue)
+        with channel_mod._response_lock:
+            channel_mod._pending_responses.clear()
+        with channel_mod._channel_request_lock:
+            channel_mod._channel_requests.clear()
+            channel_mod._session_requests.clear()
+            channel_mod._cancelled_channel_messages.clear()
+        with channel_mod._hitl_lock:
+            channel_mod._pending_hitl.clear()
+            channel_mod._hitl_auto_approve.clear()
+        with display_mod._stream_cancel_lock:
+            display_mod._stream_cancel_event.clear()
+            display_mod._stream_cancel_events.clear()
+            display_mod._stream_cancel_events[
+                display_mod._DEFAULT_STREAM_CANCEL_SCOPE
+            ] = display_mod._stream_cancel_event
+
+    _reset()
     yield
-    _drain_queue(_message_queue)
-    with channel_mod._response_lock:
-        channel_mod._pending_responses.clear()
+    _reset()
 
 
 class _FakeConfig:
@@ -251,6 +266,80 @@ class TestBusInboundConsumer:
 
         _run(_test())
 
+    def test_late_timeout_keeps_active_request_cancellable(self, monkeypatch):
+        """Late timeout must not discard an active request's cancel scope."""
+        from EvoScientist.cli import channel as channel_mod
+        from EvoScientist.cli.channel import (
+            _channel_message_cancel_scope,
+            _channel_request_state,
+            _claim_channel_request,
+            _handle_bus_message,
+            _message_queue,
+        )
+        from EvoScientist.stream import display as display_mod
+
+        monkeypatch.setattr(channel_mod, "_RESPONSE_TIMEOUT", 0.05)
+        monkeypatch.setattr(channel_mod, "_LATE_RESPONSE_TIMEOUT", 0.05)
+
+        async def _test():
+            bus = MessageBus()
+            manager = ChannelManager(bus)
+            ch = FakeChannel()
+            manager.register(ch)
+
+            task = asyncio.create_task(
+                _handle_bus_message(
+                    bus,
+                    manager,
+                    InboundMessage(
+                        channel="fake",
+                        sender_id="user1",
+                        chat_id="chat1",
+                        content="still running",
+                        message_id="msg-active",
+                    ),
+                )
+            )
+
+            queued = None
+            for _ in range(20):
+                with _message_queue.mutex:
+                    queued = _message_queue.queue[0] if _message_queue.queue else None
+                if queued is not None:
+                    break
+                await asyncio.sleep(0.05)
+
+            assert queued is not None
+            assert _claim_channel_request(queued) is True
+
+            notice = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+            assert "Still working on it" in notice.content
+
+            await task
+
+            assert _channel_request_state(queued.msg_id) == "active"
+            cancel_scope = _channel_message_cancel_scope(queued)
+            assert not display_mod.is_stream_cancel_requested(cancel_scope)
+
+            await _handle_bus_message(
+                bus,
+                manager,
+                InboundMessage(
+                    channel="fake",
+                    sender_id="user1",
+                    chat_id="chat1",
+                    content="/stop",
+                    message_id="msg-stop-active",
+                ),
+            )
+
+            ack = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+            assert ack.content == "Stopped."
+            assert ack.reply_to == "msg-stop-active"
+            assert display_mod.is_stream_cancel_requested(cancel_scope)
+
+        _run(_test())
+
     def test_cancelled_wait_cleans_pending_response(self):
         """Cancelling a pending bus message should not leak its response slot."""
         from EvoScientist.cli import channel as channel_mod
@@ -329,6 +418,173 @@ class TestBusInboundConsumer:
 
             with channel_mod._response_lock:
                 assert queued.msg_id not in channel_mod._pending_responses
+
+        _run(_test())
+
+    def test_stop_during_hitl_wait_releases_wait_and_acks(self):
+        """`/stop` should wake pending HITL wait and publish immediate ack."""
+        from EvoScientist.cli import channel as channel_mod
+        from EvoScientist.cli.channel import _bus_inbound_consumer, _message_queue
+
+        async def _test():
+            bus = MessageBus()
+            manager = ChannelManager(bus)
+            ch = FakeChannel()
+            manager.register(ch)
+
+            hitl_event = channel_mod._register_hitl_wait("fake", "chat1")
+            consumer = asyncio.create_task(_bus_inbound_consumer(bus, manager))
+
+            await bus.publish_inbound(
+                InboundMessage(
+                    channel="fake",
+                    sender_id="user1",
+                    chat_id="chat1",
+                    content="/stop",
+                    message_id="m-stop-1",
+                )
+            )
+
+            for _ in range(20):
+                if hitl_event.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert hitl_event.is_set()
+            assert channel_mod._pop_hitl_reply("fake", "chat1") == "/stop"
+
+            outbound = await asyncio.wait_for(bus.consume_outbound(), timeout=2.0)
+            assert outbound.content == "Stopped."
+            assert outbound.reply_to == "m-stop-1"
+            assert _message_queue.empty()
+
+            consumer.cancel()
+            try:
+                await consumer
+            except asyncio.CancelledError:
+                pass
+
+        _run(_test())
+
+    def test_stop_cancels_queued_request_before_main_thread_processes_it(self):
+        """`/stop` should cancel a queued request instead of only acking."""
+        from EvoScientist.cli import channel as channel_mod
+        from EvoScientist.cli.channel import (
+            _claim_or_complete_channel_request,
+            _handle_bus_message,
+            _message_queue,
+        )
+
+        async def _test():
+            bus = MessageBus()
+            manager = ChannelManager(bus)
+            ch = FakeChannel()
+            manager.register(ch)
+
+            task = asyncio.create_task(
+                _handle_bus_message(
+                    bus,
+                    manager,
+                    InboundMessage(
+                        channel="fake",
+                        sender_id="user1",
+                        chat_id="chat1",
+                        content="please work",
+                        message_id="m-work-1",
+                    ),
+                )
+            )
+
+            queued = None
+            for _ in range(20):
+                with _message_queue.mutex:
+                    queued = _message_queue.queue[0] if _message_queue.queue else None
+                if queued is not None:
+                    break
+                await asyncio.sleep(0.05)
+
+            assert queued is not None
+            with channel_mod._response_lock:
+                assert queued.msg_id in channel_mod._pending_responses
+
+            await _handle_bus_message(
+                bus,
+                manager,
+                InboundMessage(
+                    channel="fake",
+                    sender_id="user1",
+                    chat_id="chat1",
+                    content="/stop",
+                    message_id="m-stop-2",
+                ),
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            skipped = _message_queue.get_nowait()
+            assert skipped.msg_id == queued.msg_id
+            assert _claim_or_complete_channel_request(skipped) is False
+
+            with channel_mod._response_lock:
+                assert queued.msg_id not in channel_mod._pending_responses
+            with channel_mod._channel_request_lock:
+                assert queued.msg_id not in channel_mod._channel_requests
+                assert queued.msg_id not in channel_mod._cancelled_channel_messages
+                assert "fake:chat1" not in channel_mod._session_requests
+
+            outbound = await asyncio.wait_for(bus.consume_outbound(), timeout=2.0)
+            assert outbound.content == "Stopped."
+            assert outbound.reply_to == "m-stop-2"
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(bus.consume_outbound(), timeout=0.2)
+
+        _run(_test())
+
+    def test_stop_leaves_resolved_response_available_for_delivery(self):
+        """`/stop` must not steal a response whose waiter already resolved."""
+        from EvoScientist.cli import channel as channel_mod
+        from EvoScientist.cli.channel import (
+            ChannelMessage,
+            _cancel_channel_session,
+            _claim_channel_request,
+            _complete_channel_request,
+            _enqueue_channel_message,
+            _pop_channel_response,
+            _set_channel_response,
+        )
+
+        async def _test():
+            msg = ChannelMessage(
+                msg_id="msg-resolved",
+                content="already answered",
+                sender="user1",
+                channel_type="fake",
+                metadata={},
+                channel_ref=None,
+                bus_ref=None,
+                chat_id="chat1",
+                message_id="m-resolved",
+            )
+
+            waiter = _enqueue_channel_message(msg)
+            assert _claim_channel_request(msg) is True
+
+            _set_channel_response(msg.msg_id, "final answer")
+            assert await asyncio.wait_for(asyncio.shield(waiter), timeout=1.0) == (
+                "final answer"
+            )
+
+            cancelled_count, active_count = _cancel_channel_session("fake", "chat1")
+            assert cancelled_count == 0
+            assert active_count == 0
+
+            with channel_mod._response_lock:
+                assert msg.msg_id in channel_mod._pending_responses
+            with channel_mod._channel_request_lock:
+                assert msg.msg_id not in channel_mod._cancelled_channel_messages
+
+            assert _pop_channel_response(msg.msg_id) == "final answer"
+            _complete_channel_request(msg.msg_id)
 
         _run(_test())
 

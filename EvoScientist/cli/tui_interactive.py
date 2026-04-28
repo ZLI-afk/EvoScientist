@@ -44,6 +44,7 @@ from .channel import (
     _channels_stop,
     _message_queue,
     _set_channel_response,
+    dispatch_channel_slash_command,
 )
 from .file_mentions import complete_file_mention, resolve_file_mentions
 from .history_suggester import HistorySuggester
@@ -188,6 +189,29 @@ _SUMMARY_CONTINUATION_EVENTS = {
     "summarization",
     "usage_stats",
 }
+
+
+async def _sync_tui_command_completion(
+    app: Any,
+    ctx: CommandContext,
+    original_agent: Any,
+    cmd: Any,
+) -> None:
+    """Adopt successful command-side state changes back into the TUI app."""
+    agent_swapped = ctx.agent is not None and ctx.agent is not original_agent
+    if agent_swapped:
+        from ..EvoScientist import _ensure_config
+
+        app._agent_loader.adopt(ctx.agent)
+        cfg = _ensure_config()
+        update_model = getattr(app, "update_status_after_model_change", None)
+        if callable(update_model):
+            update_model(cfg.model, cfg.provider)
+        if _channels_is_running():
+            _ch_mod._cli_agent = ctx.agent
+            _ch_mod._cli_thread_id = app._conversation_tid
+
+    await app._refresh_status_snapshot(reset_streaming_text=True)
 
 
 def _should_finalize_active_summarization(event_type: str) -> bool:
@@ -729,6 +753,14 @@ def run_textual_interactive(
                 lambda m=msg: asyncio.ensure_future(self._process_channel_message(m))
             )
 
+        async def _on_channel_cmd_completed(
+            self,
+            ctx: CommandContext,
+            original_agent: Any,
+            cmd: Any,
+        ) -> None:
+            await _sync_tui_command_completion(self, ctx, original_agent, cmd)
+
         # ── Widget helpers ─────────────────────────────────────
 
         def _schedule_scroll_to_bottom(
@@ -974,6 +1006,7 @@ def run_textual_interactive(
             file_warnings: list[str] | None = None,
             channel_hitl_fn: Callable[[list], list[dict] | None] | None = None,
             channel_ask_user_fn: Callable[[dict], dict] | None = None,
+            cancel_scope: str | None = None,
         ) -> str:
             """Stream agent events and mount widgets.  Returns response text.
 
@@ -995,6 +1028,11 @@ def run_textual_interactive(
                     When provided (channel messages), this is called instead
                     of mounting the AskUserWidget.
             """
+            from ..stream.display import (
+                build_stopped_response_text,
+                is_stream_cancel_requested,
+            )
+
             container = self.query_one("#chat", VerticalScroll)
 
             # 1. Mount user message + loading spinner
@@ -1063,6 +1101,30 @@ def run_textual_interactive(
                         await w.remove()
                     except Exception:
                         pass
+
+            async def _mark_cancelled_response() -> str:
+                nonlocal assistant_w
+                previous_text = state.response_text or ""
+                current, final_text = build_stopped_response_text(previous_text)
+
+                state.response_text = final_text
+                self._set_status_streaming_text(final_text)
+
+                if assistant_w is None:
+                    if final_text:
+                        assistant_w = AssistantMessage(final_text)
+                        await container.mount(assistant_w)
+                else:
+                    if previous_text != current:
+                        assistant_w._content = final_text
+                        await assistant_w.stop_stream()
+                    else:
+                        suffix = final_text[len(current) :]
+                        if suffix:
+                            await assistant_w.append_content(suffix)
+
+                _schedule_scroll()
+                return final_text
 
             def _finalize_active_summarization() -> None:
                 """Stop the active summary timer once the stream moves on."""
@@ -1139,6 +1201,9 @@ def run_textual_interactive(
             _stream_input: Any = user_text  # str or Command for HITL resume
 
             for _hitl_round in range(_MAX_HITL_ROUNDS):
+                if is_stream_cancel_requested(cancel_scope):
+                    response = await _mark_cancelled_response()
+                    break
                 state.pending_interrupt = None
                 state.pending_ask_user = None
                 _hitl_resuming = False
@@ -1153,6 +1218,9 @@ def run_textual_interactive(
                         self._conversation_tid,
                         metadata=metadata,
                     ):
+                        if is_stream_cancel_requested(cancel_scope):
+                            response = await _mark_cancelled_response()
+                            break
                         event_type = state.handle_event(event)
 
                         if event_type == "usage_stats":
@@ -1456,6 +1524,10 @@ def run_textual_interactive(
                                     result = await asyncio.to_thread(
                                         lambda f=_ask_fn, e=event: f(e),
                                     )
+                                    if is_stream_cancel_requested(cancel_scope):
+                                        state.pending_ask_user = None
+                                        response = await _mark_cancelled_response()
+                                        break
                                 else:
                                     # Interactive TUI: display widget, collect via arrow keys
                                     from .widgets.ask_user_widget import AskUserWidget
@@ -1510,6 +1582,10 @@ def run_textual_interactive(
                                     channel_hitl_fn,
                                     action_reqs,
                                 )
+                                if is_stream_cancel_requested(cancel_scope):
+                                    state.pending_interrupt = None
+                                    response = await _mark_cancelled_response()
+                                    break
                                 if decisions is not None:
                                     from langgraph.types import (
                                         Command,  # type: ignore[import-untyped]
@@ -1673,6 +1749,9 @@ def run_textual_interactive(
                     self._schedule_scroll_to_bottom(container)
 
                 # HITL / ask_user: if interrupt was handled, loop back to resume stream
+                if is_stream_cancel_requested(cancel_scope):
+                    response = await _mark_cancelled_response()
+                    break
                 if state.pending_interrupt is None and state.pending_ask_user is None:
                     break  # normal completion or rejection — exit HITL loop
                 # Otherwise _stream_input was set to Command(resume=...)
@@ -1734,6 +1813,8 @@ def run_textual_interactive(
               [channel: Replied to sender]
             """
             prompt_widget = None
+            if not _ch_mod._claim_or_complete_channel_request(msg):
+                return
             try:
                 self._busy = True
                 await self._refresh_status_snapshot(msg.content)
@@ -1819,54 +1900,24 @@ def run_textual_interactive(
                     """
                     return _ch_mod.channel_ask_user_prompt(ask_user_data, msg)
 
-                from ..commands.channel_ui import ChannelCommandUI
-
-                # Handle slash commands from channel
-                if msg.content.strip().startswith("/"):
-                    # Only wait for the agent if the command actually
-                    # needs it — otherwise ``/mcp add`` & friends would
-                    # hang behind a failing MCP load they're meant to fix.
-                    cmd, cmd_args = cmd_manager.resolve(msg.content) or (None, [])
-                    agent = None
-                    if cmd is not None and cmd.needs_agent(cmd_args):
-                        try:
-                            agent = await self._await_agent_ready()
-                        except Exception as exc:
-                            _set_channel_response(msg.msg_id, f"Error: {exc}")
-                            return
-                    ctx = CommandContext(
-                        agent=agent,
-                        thread_id=self._conversation_tid,
-                        ui=ChannelCommandUI(
-                            msg,
-                            append_system_callback=self._append_system,
-                            start_new_session_callback=self.start_new_session,
-                            handle_session_resume_callback=self.handle_session_resume,
-                        ),
-                        workspace_dir=self._workspace_dir,
-                        checkpointer=self._checkpointer,
-                    )
-                    try:
-                        cmd_executed = await cmd_manager.execute(msg.content, ctx)
-                    except Exception as _cmd_exc:
-                        # Command raised — report the error and do NOT fall through
-                        # to _stream_with_widgets (which would treat the slash
-                        # command text as a plain user message to the agent).
-                        _channel_logger.debug(
-                            f"Channel command error: {_cmd_exc}", exc_info=True
-                        )
-                        _set_channel_response(msg.msg_id, f"Command error: {_cmd_exc}")
-                        return  # outer finally handles _busy / widget cleanup
-
-                    if cmd_executed:
-                        self._append_system(
-                            f"[{msg.channel_type}: Executed command from {msg.sender}]",
-                            style="dim",
-                        )
-                        _set_channel_response(
-                            msg.msg_id, f"Command executed: {msg.content}"
-                        )
-                        return  # outer finally handles _busy / widget cleanup
+                # Handle slash commands from channel via the shared
+                # dispatcher (same path Rich CLI and headless serve use).
+                # Returns True when the command was handled (or errored)
+                # and we must NOT fall through to agent streaming.
+                _slash_handled = await dispatch_channel_slash_command(
+                    msg,
+                    agent=None,  # resolved via await_agent_ready on demand
+                    thread_id=self._conversation_tid,
+                    workspace_dir=self._workspace_dir,
+                    checkpointer=self._checkpointer,
+                    append_system=self._append_system,
+                    start_new_session_cb=self.start_new_session,
+                    handle_session_resume_cb=self.handle_session_resume,
+                    await_agent_ready=self._await_agent_ready,
+                    on_cmd_completed=self._on_channel_cmd_completed,
+                )
+                if _slash_handled:
+                    return  # outer finally handles _busy / widget cleanup
 
                 # Non-slash message — streams through the agent, so wait
                 # for readiness now.
@@ -1888,6 +1939,7 @@ def run_textual_interactive(
                         skip_user_message=True,
                         channel_hitl_fn=_channel_hitl_prompt,
                         channel_ask_user_fn=_channel_ask_user,
+                        cancel_scope=_ch_mod._channel_message_cancel_scope(msg),
                     )
                 except Exception as exc:
                     response = f"Error: {exc}"
@@ -1906,6 +1958,7 @@ def run_textual_interactive(
                 if prompt_widget is not None:
                     prompt_widget.disabled = False
                     prompt_widget.focus()
+                _ch_mod._complete_channel_request(msg.msg_id)
 
         # ── Clipboard (copy on mouse select) ─────────────────
 
@@ -2032,13 +2085,32 @@ def run_textual_interactive(
                 if isinstance(focused, MCPBrowserWidget):
                     focused.action_cancel()
                     return
+                # ModelPickerWidget: when in "Custom Ollama" input mode, its
+                # child Input widget owns focus, so ``focused`` isn't the
+                # picker itself. Walk the parent chain to find it, then let
+                # the widget's own action_cancel decide whether to close the
+                # picker (list mode) or just exit input mode.
+                picker: ModelPickerWidget | None = None
                 if isinstance(focused, ModelPickerWidget):
-                    focused.action_cancel()
-                    if (
-                        self._model_picker_future
-                        and not self._model_picker_future.done()
-                    ):
-                        self._model_picker_future.set_result(None)
+                    picker = focused
+                else:
+                    node = focused.parent
+                    while node is not None and not isinstance(node, ModelPickerWidget):
+                        node = node.parent
+                    picker = node
+                if picker is not None:
+                    prev_mode = getattr(picker, "_mode", "list")
+                    picker.action_cancel()
+                    # In list mode action_cancel posted Cancelled; resolve the
+                    # future immediately to avoid a frame of lag. In input
+                    # mode action_cancel flipped back to list — keep picker
+                    # open, do NOT close the future.
+                    if prev_mode == "list":
+                        if (
+                            self._model_picker_future
+                            and not self._model_picker_future.done()
+                        ):
+                            self._model_picker_future.set_result(None)
                     return
             if self._queued_messages:
                 self._queued_messages.pop()
@@ -2078,8 +2150,19 @@ def run_textual_interactive(
                 if isinstance(focused, MCPBrowserWidget):
                     focused.action_move_up()
                     return
+                # ModelPickerWidget: Up from the Custom Ollama Input child
+                # must reach the picker (to exit input mode). See the Esc
+                # handler above for the parent-walk rationale.
+                picker_up: ModelPickerWidget | None = None
                 if isinstance(focused, ModelPickerWidget):
-                    focused.action_move_up()
+                    picker_up = focused
+                else:
+                    node = focused.parent
+                    while node is not None and not isinstance(node, ModelPickerWidget):
+                        node = node.parent
+                    picker_up = node
+                if picker_up is not None:
+                    picker_up.action_move_up()
                     return
             if self._queued_messages:
                 last = self._queued_messages.pop()
@@ -2135,8 +2218,17 @@ def run_textual_interactive(
                 if isinstance(focused, MCPBrowserWidget):
                     focused.action_move_down()
                     return
+                # Same parent-walk rationale as action_edit_queued / cancel.
+                picker_down: ModelPickerWidget | None = None
                 if isinstance(focused, ModelPickerWidget):
-                    focused.action_move_down()
+                    picker_down = focused
+                else:
+                    node = focused.parent
+                    while node is not None and not isinstance(node, ModelPickerWidget):
+                        node = node.parent
+                    picker_down = node
+                if picker_down is not None:
+                    picker_down.action_move_down()
                     return
 
             # History browsing (down key)
@@ -2283,27 +2375,11 @@ def run_textual_interactive(
                 )
 
                 if await cmd_manager.execute(command, ctx):
-                    # Sync agent back if command replaced it (e.g. /model).
-                    # ``is not None`` guard: non-agent commands (ctx.agent
-                    # starts None) must not clobber a valid loaded agent.
-                    if (
-                        ctx.agent is not None
-                        and ctx.agent is not self._agent_loader.agent
-                    ):
-                        # ``adopt`` also cancels/supersedes any in-flight
-                        # load so a late completion can't overwrite the
-                        # replacement agent (/model on a broken provider).
-                        self._agent_loader.adopt(ctx.agent)
-                        if _channels_is_running():
-                            _ch_mod._cli_agent = ctx.agent
-                            _ch_mod._cli_thread_id = self._conversation_tid
-                    # Do NOT invalidate the usage baseline after /compact.
-                    # build_session_status_snapshot() only counts raw checkpoint
-                    # messages (~46 tokens) and misses system prompt + tool
-                    # definitions (~50K overhead). The stale pre-compact count
-                    # is far more accurate; the next LLM call will correct it.
-                    await self._refresh_status_snapshot(
-                        reset_streaming_text=True,
+                    await _sync_tui_command_completion(
+                        self,
+                        ctx,
+                        self._agent_loader.agent,
+                        cmd,
                     )
                     return
 
